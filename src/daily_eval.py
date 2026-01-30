@@ -348,7 +348,266 @@ def create_excel_report(results: dict, output_path: str):
         for col_idx in range(1, len(headers) + 1):
             ws_sectors.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
 
-    # ========== Sheet 6: Historical Log ==========
+    # ========== Sheet 6: Decision Helper (NEW!) ==========
+    ws_decision = wb.create_sheet("Decision Helper")
+    portfolio_value = results.get('portfolio_value', 166600)
+
+    # Portfolio info header
+    gold_fill = PatternFill(start_color='F6AE2D', end_color='F6AE2D', fill_type='solid')
+    strong_fill = PatternFill(start_color='2E7D32', end_color='2E7D32', fill_type='solid')
+    moderate_fill = PatternFill(start_color='F9A825', end_color='F9A825', fill_type='solid')
+
+    ws_decision.cell(row=1, column=1, value=f"DECISION HELPER - Portfolio: ${portfolio_value:,.0f}")
+    ws_decision.cell(row=1, column=1).font = Font(bold=True, size=14)
+    ws_decision.merge_cells('A1:L1')
+
+    # Position sizing rules
+    ws_decision.cell(row=2, column=1, value="Position Rules:")
+    ws_decision.cell(row=2, column=2, value=f"Max (25%): ${portfolio_value * 0.25:,.0f}")
+    ws_decision.cell(row=2, column=4, value=f"Standard (10%): ${portfolio_value * 0.10:,.0f}")
+    ws_decision.cell(row=2, column=6, value=f"Small (5%): ${portfolio_value * 0.05:,.0f}")
+    ws_decision.cell(row=2, column=1).font = Font(bold=True)
+
+    # Build decision helper data from screening results
+    screen_df = results['screening_df'].copy()
+    bullish_only = screen_df[screen_df['Signal'].str.contains('BULLISH', na=False)].copy()
+
+    if not bullish_only.empty:
+        # Calculate conviction score for each stock
+        decision_data = []
+        for _, row in bullish_only.iterrows():
+            score = 0
+            reasons = []
+
+            # Scoring criteria
+            num_bullish = row.get('Num_Bullish', 0) or 0
+            num_bearish = row.get('Num_Bearish', 0) or 0
+            rsi = row.get('RSI', 50) or 50
+            vol_ratio = row.get('Vol_Ratio', 1) or 1
+            rs_spy = row.get('RS_vs_SPY', 0) or 0
+            dist_200 = row.get('Dist_200_SMA', 0) or 0
+            price = row.get('Price', 0) or 0
+            atr_pct = row.get('ATR_Pct', 2) or 2
+
+            # +2 for multiple bullish setups
+            if num_bullish >= 2:
+                score += 2
+                reasons.append("Multi-setup")
+            elif num_bullish == 1:
+                score += 1
+
+            # -1 for any bearish signals
+            if num_bearish > 0:
+                score -= 1
+                reasons.append("Has bearish")
+
+            # +1 for RSI sweet spot (40-60)
+            if 40 <= rsi <= 60:
+                score += 1
+                reasons.append("RSI sweet spot")
+            elif rsi > 70:
+                score -= 1
+                reasons.append("Overbought")
+
+            # +1 for volume confirmation
+            if vol_ratio > 1.2:
+                score += 1
+                reasons.append("Vol confirm")
+
+            # +1 for relative strength
+            if rs_spy > 3:
+                score += 1
+                reasons.append("RS leader")
+            elif rs_spy > 0:
+                score += 0.5
+
+            # +1 for healthy trend (not extended)
+            if 0 < dist_200 < 15:
+                score += 1
+                reasons.append("Healthy trend")
+            elif dist_200 > 25:
+                score -= 1
+                reasons.append("Extended")
+
+            # Calculate position size based on score
+            if score >= 4:
+                position_pct = 0.10  # 10% for high conviction
+                conviction = "STRONG"
+            elif score >= 2:
+                position_pct = 0.07  # 7% for moderate
+                conviction = "MODERATE"
+            else:
+                position_pct = 0.05  # 5% for low
+                conviction = "WEAK"
+
+            position_value = portfolio_value * position_pct
+            shares = int(position_value / price) if price > 0 else 0
+            stop_loss = price * (1 - atr_pct * 2 / 100) if price > 0 else 0
+            risk_per_share = price - stop_loss
+            total_risk = risk_per_share * shares
+
+            decision_data.append({
+                'Ticker': row['Ticker'],
+                'Score': score,
+                'Conviction': conviction,
+                'Price': price,
+                'Shares': shares,
+                'Position $': position_value,
+                'Stop Loss': stop_loss,
+                'Risk $': total_risk,
+                'RSI': rsi,
+                'RS vs SPY': rs_spy,
+                'Reasons': ', '.join(reasons[:3])
+            })
+
+        # Sort by score descending
+        decision_df = pd.DataFrame(decision_data).sort_values('Score', ascending=False)
+
+        # Write headers
+        headers = list(decision_df.columns)
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws_decision.cell(row=4, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = border
+
+        # Write data with color coding
+        for row_idx, row in enumerate(decision_df.itertuples(index=False), 5):
+            for col_idx, value in enumerate(row, 1):
+                col_name = headers[col_idx - 1]
+
+                # Format values
+                if col_name in ['Price', 'Stop Loss', 'Position $', 'Risk $']:
+                    display_val = f"${value:,.2f}" if pd.notna(value) else ""
+                elif col_name in ['RSI', 'RS vs SPY', 'Score']:
+                    display_val = f"{value:.1f}" if pd.notna(value) else ""
+                else:
+                    display_val = value
+
+                cell = ws_decision.cell(row=row_idx, column=col_idx, value=display_val)
+                cell.border = border
+
+                # Color code conviction column
+                if col_name == 'Conviction':
+                    if value == 'STRONG':
+                        cell.fill = strong_fill
+                        cell.font = Font(bold=True, color='FFFFFF')
+                    elif value == 'MODERATE':
+                        cell.fill = moderate_fill
+                    # WEAK stays default
+
+                # Color code score
+                if col_name == 'Score':
+                    if float(value) >= 4:
+                        cell.fill = bullish_fill
+                    elif float(value) < 2:
+                        cell.fill = bearish_fill
+
+        # Set column widths
+        col_widths = [10, 8, 12, 10, 8, 12, 10, 10, 8, 10, 25]
+        for col_idx, width in enumerate(col_widths, 1):
+            ws_decision.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = width
+
+    else:
+        ws_decision.cell(row=4, column=1, value="No bullish setups found today - consider waiting for better opportunities")
+
+    # ========== Sheet 7: Trade Journal ==========
+    ws_journal = wb.create_sheet("Trade Journal")
+
+    # Title and instructions
+    ws_journal.cell(row=1, column=1, value="TRADE JOURNAL - Track Your Entries & Exits")
+    ws_journal.cell(row=1, column=1).font = Font(bold=True, size=14)
+    ws_journal.merge_cells('A1:N1')
+
+    ws_journal.cell(row=2, column=1, value="Instructions: Fill in Entry columns when you buy. Fill in Exit columns when you sell. P&L and Hold Days calculate automatically.")
+    ws_journal.cell(row=2, column=1).font = Font(italic=True, color='666666')
+    ws_journal.merge_cells('A2:N2')
+
+    # Headers
+    journal_headers = [
+        'Ticker', 'Setup', 'Entry Date', 'Entry Price', 'Shares', 'Position $',
+        'Stop Loss', 'Target', 'Exit Date', 'Exit Price', 'Exit Reason',
+        'P&L $', 'P&L %', 'Hold Days', 'Notes'
+    ]
+    for col_idx, header in enumerate(journal_headers, 1):
+        cell = ws_journal.cell(row=4, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = border
+        cell.alignment = Alignment(horizontal='center')
+
+    # Add Excel formulas for auto-calculation (rows 5-54 for 50 trades)
+    for row in range(5, 55):
+        # P&L $ formula: (Exit Price - Entry Price) * Shares
+        pnl_formula = f'=IF(AND(J{row}<>"",D{row}<>"",E{row}<>""),(J{row}-D{row})*E{row},"")'
+        ws_journal.cell(row=row, column=12, value=pnl_formula)
+
+        # P&L % formula: (Exit Price - Entry Price) / Entry Price * 100
+        pnl_pct_formula = f'=IF(AND(J{row}<>"",D{row}<>""),(J{row}-D{row})/D{row}*100,"")'
+        ws_journal.cell(row=row, column=13, value=pnl_pct_formula)
+
+        # Hold Days formula: Exit Date - Entry Date
+        hold_formula = f'=IF(AND(I{row}<>"",C{row}<>""),I{row}-C{row},"")'
+        ws_journal.cell(row=row, column=14, value=hold_formula)
+
+        # Add borders to all cells
+        for col in range(1, 16):
+            ws_journal.cell(row=row, column=col).border = border
+
+    # Pre-fill some example rows with placeholder formatting
+    example_data = [
+        ['', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Example: AMZN swing trade'],
+    ]
+
+    # Set column widths
+    journal_widths = [8, 15, 12, 10, 8, 12, 10, 10, 12, 10, 12, 10, 8, 10, 25]
+    for col_idx, width in enumerate(journal_widths, 1):
+        ws_journal.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = width
+
+    # Add conditional formatting for P&L column (green if positive, red if negative)
+    from openpyxl.formatting.rule import CellIsRule
+    green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+    red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+
+    ws_journal.conditional_formatting.add('L5:L54',
+        CellIsRule(operator='greaterThan', formula=['0'], fill=green_fill))
+    ws_journal.conditional_formatting.add('L5:L54',
+        CellIsRule(operator='lessThan', formula=['0'], fill=red_fill))
+    ws_journal.conditional_formatting.add('M5:M54',
+        CellIsRule(operator='greaterThan', formula=['0'], fill=green_fill))
+    ws_journal.conditional_formatting.add('M5:M54',
+        CellIsRule(operator='lessThan', formula=['0'], fill=red_fill))
+
+    # Summary section at bottom
+    ws_journal.cell(row=56, column=1, value="SUMMARY STATS")
+    ws_journal.cell(row=56, column=1).font = Font(bold=True)
+
+    ws_journal.cell(row=57, column=1, value="Total Trades:")
+    ws_journal.cell(row=57, column=2, value='=COUNTA(A5:A54)')
+
+    ws_journal.cell(row=58, column=1, value="Winning Trades:")
+    ws_journal.cell(row=58, column=2, value='=COUNTIF(L5:L54,">0")')
+
+    ws_journal.cell(row=59, column=1, value="Losing Trades:")
+    ws_journal.cell(row=59, column=2, value='=COUNTIF(L5:L54,"<0")')
+
+    ws_journal.cell(row=60, column=1, value="Win Rate:")
+    ws_journal.cell(row=60, column=2, value='=IF(B57>0,B58/B57*100,0)')
+    ws_journal.cell(row=60, column=3, value="%")
+
+    ws_journal.cell(row=61, column=1, value="Total P&L:")
+    ws_journal.cell(row=61, column=2, value='=SUM(L5:L54)')
+
+    ws_journal.cell(row=62, column=1, value="Avg Hold Days:")
+    ws_journal.cell(row=62, column=2, value='=IF(COUNTA(N5:N54)>0,AVERAGE(N5:N54),0)')
+
+    ws_journal.cell(row=63, column=1, value="Avg Win %:")
+    ws_journal.cell(row=63, column=2, value='=IF(B58>0,AVERAGEIF(M5:M54,">0"),0)')
+
+    ws_journal.cell(row=64, column=1, value="Avg Loss %:")
+    ws_journal.cell(row=64, column=2, value='=IF(B59>0,AVERAGEIF(M5:M54,"<0"),0)')
+
+    # ========== Sheet 8: Historical Log ==========
     ws_log = wb.create_sheet("Daily Log")
 
     log_headers = ['Date', 'SPY Price', 'SPY RSI', 'Bullish', 'Bearish', 'Neutral', 'Top Setup']
@@ -476,6 +735,12 @@ def main():
         action='store_true',
         help='Save to CSV instead of Excel'
     )
+    parser.add_argument(
+        '--portfolio', '--pv',
+        type=float,
+        default=166600,
+        help='Your portfolio value for position sizing (default: $166,600)'
+    )
 
     args = parser.parse_args()
 
@@ -490,8 +755,14 @@ def main():
     # Run evaluation
     results = run_daily_evaluation(tickers, period=args.period)
 
+    # Add portfolio value to results for Decision Helper sheet
+    results['portfolio_value'] = args.portfolio
+
     # Print summary
     print_summary(results)
+    print(f"\nPortfolio Value: ${args.portfolio:,.0f}")
+    print(f"  Max Position (25%): ${args.portfolio * 0.25:,.0f}")
+    print(f"  Standard (10%): ${args.portfolio * 0.10:,.0f}")
 
     # Save results
     output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
