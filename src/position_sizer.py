@@ -6,6 +6,11 @@ Based on volatility (ATR) and risk management principles
 import pandas as pd
 from dataclasses import dataclass
 from typing import Optional
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config import COMPETITION, RISK
 
 
 @dataclass
@@ -37,26 +42,32 @@ class PositionSizer:
     - Minimum short price: $10
     """
 
-    # Competition rule constants
-    MAX_SINGLE_SECURITY_PCT = 25  # Max 25% in any single security
-    MAX_DIVERSIFIED_FUND_PCT = 50  # Max 50% in diversified funds/ETFs
-    MIN_BUY_PRICE = 5.0
-    MIN_SHORT_PRICE = 10.0
+    # Competition rule constants (from config)
+    MAX_SINGLE_SECURITY_PCT = COMPETITION['max_single_position_pct']
+    MAX_DIVERSIFIED_FUND_PCT = COMPETITION['max_etf_pct']
+    MIN_BUY_PRICE = COMPETITION['min_buy_price']
+    MIN_SHORT_PRICE = COMPETITION['min_short_price']
 
     def __init__(self,
-                 portfolio_value: float = 500000.00,  # Full $500k fund
-                 max_risk_per_trade_pct: float = 1.0,  # Risk 1% per trade
-                 max_position_pct: float = 25.0,  # Competition max: 25%
-                 atr_multiplier: float = 2.0,  # Stop loss = 2x ATR
-                 is_diversified_fund: bool = False):  # If True, uses 50% max
+                 portfolio_value: float = None,
+                 max_risk_per_trade_pct: float = None,
+                 max_position_pct: float = None,
+                 atr_multiplier: float = None,
+                 is_diversified_fund: bool = False):
         """
         Args:
-            portfolio_value: Total portfolio value
+            portfolio_value: Total portfolio value (default from config)
             max_risk_per_trade_pct: Maximum % of portfolio to risk per trade
             max_position_pct: Maximum % of portfolio in single position (default 25% per rules)
             atr_multiplier: Multiplier for ATR to set stop loss distance
             is_diversified_fund: If True, allows up to 50% position (ETF/mutual fund)
         """
+        # Use defaults from config if not specified
+        portfolio_value = portfolio_value or COMPETITION['initial_capital']
+        max_risk_per_trade_pct = max_risk_per_trade_pct or RISK['default_risk_pct']
+        max_position_pct = max_position_pct or self.MAX_SINGLE_SECURITY_PCT
+        atr_multiplier = atr_multiplier or RISK['stop_loss_atr_mult']
+
         self.portfolio_value = portfolio_value
         self.max_risk_per_trade = portfolio_value * (max_risk_per_trade_pct / 100)
 
@@ -227,38 +238,27 @@ def print_position_report(sizer: PositionSizer, stocks: list):
 
 def get_live_stock_data(tickers: list) -> list:
     """Fetch live price and ATR data for position sizing"""
-    import yfinance as yf
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from indicators import calculate_atr
+    from data_service import DataService
+    from indicators import add_all_indicators, get_latest_indicators
 
+    data_service = DataService()
     stocks = []
+
     for ticker in tickers:
         try:
-            df = yf.download(ticker, period="3mo", progress=False)
-            if df.empty:
+            df = data_service.fetch_stock(ticker, period="3mo")
+            if df is None or df.empty:
                 continue
 
-            # Calculate ATR
-            high = df['High']
-            low = df['Low']
-            close = df['Close']
-            tr1 = high - low
-            tr2 = abs(high - close.shift(1))
-            tr3 = abs(low - close.shift(1))
-            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = true_range.rolling(window=14).mean().iloc[-1]
-
-            # Handle multi-index columns from yfinance
-            current_price = float(df['Close'].iloc[-1].iloc[0] if hasattr(df['Close'].iloc[-1], 'iloc') else df['Close'].iloc[-1])
-            atr_val = float(atr.iloc[0] if hasattr(atr, 'iloc') else atr)
+            # Add indicators to get ATR
+            df = add_all_indicators(df)
+            latest = get_latest_indicators(df)
 
             stocks.append({
                 'ticker': ticker,
-                'price': current_price,
-                'atr': atr_val,
-                'target': None  # Can be set manually
+                'price': latest.get('close', 0),
+                'atr': latest.get('atr', 0),
+                'target': None
             })
         except Exception as e:
             print(f"Error fetching {ticker}: {e}")

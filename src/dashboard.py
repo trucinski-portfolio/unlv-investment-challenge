@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 UNLV Investment Challenge - Trading Dashboard
-Main entry point for running the stock screening system
+
+DEPRECATED: Use main.py instead:
+    python main.py scan         # Daily market scan
+    python main.py chart NVDA   # Generate charts
+    python main.py backtest     # Run backtest
+
+This file is kept for backward compatibility but will be removed.
 """
 
 import pandas as pd
@@ -9,16 +15,17 @@ from datetime import datetime
 import argparse
 import os
 import sys
+import warnings
 
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from data_collector import (
+from config import WATCHLIST
+from data_service import (
     get_sp500_tickers,
     fetch_bulk_data,
     fetch_spy_benchmark,
     fetch_stock_metadata,
-    SP500_TOP_100
 )
 from indicators import add_all_indicators, get_latest_indicators
 from screener import StockScreener, generate_screening_report
@@ -244,8 +251,16 @@ def run_full_scan_with_charts(num_stocks: int = 100, period: str = "2y",
 
 
 def main():
+    # Deprecation warning
+    print("\n" + "=" * 60)
+    print("WARNING: dashboard.py is deprecated. Use main.py instead:")
+    print("  python main.py scan         # Daily market scan")
+    print("  python main.py chart NVDA   # Generate charts")
+    print("  python main.py quick AAPL   # Quick console scan")
+    print("=" * 60 + "\n")
+
     parser = argparse.ArgumentParser(
-        description='UNLV Investment Challenge - Stock Screening Dashboard'
+        description='DEPRECATED - Use main.py instead'
     )
     parser.add_argument(
         '--mode', '-m',
@@ -298,11 +313,9 @@ def main():
                 save_csv=not args.no_save
             )
     elif args.mode == 'watchlist':
-        watchlist = ['MSFT', 'META', 'NVDA', 'AAPL', 'TSLA', 'IWM',
-                     'AMZN', 'GOOGL', 'AMD', 'NFLX']
-        run_quick_scan(watchlist, period=args.period)
+        run_quick_scan(WATCHLIST, period=args.period)
         if args.charts:
-            run_chart_mode(watchlist, period=args.period, save_charts=not args.no_save)
+            run_chart_mode(WATCHLIST, period=args.period, save_charts=not args.no_save)
     elif args.mode == 'chart':
         # Chart-only mode
         run_chart_mode(args.tickers, period=args.period, save_charts=not args.no_save)

@@ -1,34 +1,41 @@
 #!/usr/bin/env python3
 """
 Daily Market Evaluation Script for UNLV Investment Challenge
-Runs a complete market scan and saves results to Excel for tracking
 
-Usage:
-    python src/daily_eval.py                    # Full scan with defaults
-    python src/daily_eval.py --tickers NVDA AAPL META  # Specific tickers
-    python src/daily_eval.py --top 50           # Top 50 S&P 500 stocks
-    python src/daily_eval.py --watchlist        # Your watchlist only
+NOTE: Prefer using main.py instead:
+    python main.py scan                    # Daily scan → Excel
+    python main.py scan --watchlist        # Scan watchlist only
+    python main.py scan --date 2026-01-27  # Historical scan
 """
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import sys
 import argparse
+from typing import Optional
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from data_collector import (
+# Import from centralized modules
+from config import (
+    WATCHLIST,
+    SECTOR_ETFS,
+    DEFAULT_PORTFOLIO_VALUE,
+    COMPETITION,
+    POSITION_SIZING,
+    SCREENING,
+)
+from data_service import (
+    DataService,
     get_sp500_tickers,
     fetch_bulk_data,
     fetch_spy_benchmark,
-    SP500_TOP_100,
-    SECTOR_ETFS
 )
 from indicators import add_all_indicators, get_latest_indicators
-from screener import StockScreener, generate_screening_report
+from screener import StockScreener
 from position_sizer import PositionSizer
 
 # Try to import openpyxl for Excel support
@@ -43,39 +50,58 @@ except ImportError:
     print("Note: Install openpyxl for Excel support: pip install openpyxl")
 
 
-# Default watchlist - customize these
-WATCHLIST = [
-    'MSFT', 'META', 'NVDA', 'AAPL', 'TSLA', 'GOOGL',
-    'AMZN', 'AMD', 'NFLX', 'CRM', 'AVGO', 'COST'
-]
-
-
-def run_daily_evaluation(tickers: list, period: str = "1y") -> dict:
+def run_daily_evaluation(tickers: list, period: str = "1y", eval_date: Optional[str] = None) -> dict:
     """
-    Run complete daily market evaluation
+    Run complete daily market evaluation.
 
-    Returns dict with:
-        - summary: Market overview
-        - screening: Full screening results
-        - setups: Bullish/bearish setups
-        - sector_performance: Sector ETF performance
-        - position_recommendations: Suggested position sizes
+    Args:
+        tickers: List of ticker symbols to scan
+        period: Historical data period (e.g., "1y", "6mo")
+        eval_date: Optional date string (YYYY-MM-DD) to get closing prices for.
+                   If None, uses most recent available data.
+
+    Returns:
+        dict with screening results, setups, sector performance, etc.
     """
+    # Initialize data service
+    data_service = DataService()
+
+    # Determine the evaluation date
+    target_date = None
+    if eval_date:
+        try:
+            target_date = pd.to_datetime(eval_date).date()
+            date_display = target_date.strftime('%Y-%m-%d')
+            print(f"\n*** HISTORICAL MODE: Getting closing prices for {date_display} ***")
+        except ValueError:
+            print(f"Invalid date format: {eval_date}. Use YYYY-MM-DD. Falling back to today.")
+            eval_date = None
+            date_display = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        date_display = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     print("\n" + "=" * 70)
     print("ASTRYX INVESTING - DAILY MARKET EVALUATION")
-    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Date: {date_display}")
     print(f"Stocks: {len(tickers)}")
     print("=" * 70)
 
     results = {
-        'run_date': datetime.now(),
-        'tickers_scanned': len(tickers)
+        'run_date': pd.to_datetime(eval_date) if eval_date else datetime.now(),
+        'tickers_scanned': len(tickers),
+        'eval_date': eval_date
     }
 
     # 1. Fetch SPY benchmark
     print("\n[1/5] Fetching benchmark data...")
-    spy_df = fetch_spy_benchmark(period)
+    spy_df = data_service.fetch_spy(period)
     if spy_df is not None:
+        if target_date:
+            spy_df = data_service.filter_to_date(spy_df, target_date)
+            actual_date = pd.to_datetime(spy_df.index[-1]).date()
+            if actual_date != target_date:
+                print(f"    Note: Using closest available date: {actual_date}")
+
         spy_df = add_all_indicators(spy_df)
         spy_latest = spy_df.iloc[-1]
         results['spy_price'] = float(spy_latest['Close'])
@@ -83,7 +109,7 @@ def run_daily_evaluation(tickers: list, period: str = "1y") -> dict:
 
     # 2. Fetch and process all stock data
     print("\n[2/5] Fetching stock data...")
-    stock_data = fetch_bulk_data(tickers, period=period)
+    stock_data = data_service.fetch_multiple(tickers, period=period)
 
     print("\n[3/5] Calculating indicators...")
     latest_data = {}
@@ -91,6 +117,9 @@ def run_daily_evaluation(tickers: list, period: str = "1y") -> dict:
 
     for ticker, df in stock_data.items():
         try:
+            if target_date:
+                df = data_service.filter_to_date(df, target_date)
+
             df_ind = add_all_indicators(df, spy_df)
             full_data[ticker] = df_ind
             latest_data[ticker] = get_latest_indicators(df_ind)
@@ -146,28 +175,30 @@ def run_daily_evaluation(tickers: list, period: str = "1y") -> dict:
     # 6. Sector performance
     print("\nFetching sector ETF data...")
     sector_data = []
+    sector_period = '1mo' if target_date else '5d'
+
     for etf, name in SECTOR_ETFS.items():
         try:
-            import yfinance as yf
-            etf_df = yf.download(etf, period='5d', progress=False)
-            if not etf_df.empty:
-                # Handle multi-index columns
-                close_col = etf_df['Close']
-                if hasattr(close_col, 'iloc') and hasattr(close_col.iloc[-1], 'iloc'):
-                    current = float(close_col.iloc[-1].iloc[0])
-                    prev = float(close_col.iloc[-2].iloc[0]) if len(close_col) > 1 else current
-                else:
-                    current = float(close_col.iloc[-1])
-                    prev = float(close_col.iloc[-2]) if len(close_col) > 1 else current
+            etf_df = data_service.fetch_stock(etf, period=sector_period, use_cache=False)
+            if etf_df is not None and not etf_df.empty:
+                if target_date:
+                    etf_df = data_service.filter_to_date(etf_df, target_date)
 
-                change_pct = ((current - prev) / prev) * 100
+                current = data_service.get_closing_price(etf_df)
+                # Get previous day's close
+                if len(etf_df) > 1:
+                    prev = data_service.get_closing_price(etf_df.iloc[:-1])
+                else:
+                    prev = current
+
+                change_pct = ((current - prev) / prev) * 100 if prev > 0 else 0
                 sector_data.append({
                     'ETF': etf,
                     'Sector': name,
                     'Price': current,
                     'Change %': change_pct
                 })
-        except Exception as e:
+        except Exception:
             pass
 
     results['sectors_df'] = pd.DataFrame(sector_data)
@@ -351,26 +382,42 @@ def create_excel_report(results: dict, output_path: str):
     # ========== Sheet 6: Decision Helper (NEW!) ==========
     ws_decision = wb.create_sheet("Decision Helper")
     portfolio_value = results.get('portfolio_value', 166600)
+    margin_buying_power = portfolio_value * 2  # 2:1 margin
 
     # Portfolio info header
     gold_fill = PatternFill(start_color='F6AE2D', end_color='F6AE2D', fill_type='solid')
     strong_fill = PatternFill(start_color='2E7D32', end_color='2E7D32', fill_type='solid')
     moderate_fill = PatternFill(start_color='F9A825', end_color='F9A825', fill_type='solid')
+    short_fill = PatternFill(start_color='9C27B0', end_color='9C27B0', fill_type='solid')  # Purple for shorts
 
-    ws_decision.cell(row=1, column=1, value=f"DECISION HELPER - Portfolio: ${portfolio_value:,.0f}")
+    ws_decision.cell(row=1, column=1, value=f"DECISION HELPER - Portfolio: ${portfolio_value:,.0f} | Margin Power: ${margin_buying_power:,.0f}")
     ws_decision.cell(row=1, column=1).font = Font(bold=True, size=14)
     ws_decision.merge_cells('A1:L1')
 
-    # Position sizing rules
-    ws_decision.cell(row=2, column=1, value="Position Rules:")
+    # Position sizing rules with margin info
+    ws_decision.cell(row=2, column=1, value="LONG Rules:")
     ws_decision.cell(row=2, column=2, value=f"Max (25%): ${portfolio_value * 0.25:,.0f}")
-    ws_decision.cell(row=2, column=4, value=f"Standard (10%): ${portfolio_value * 0.10:,.0f}")
-    ws_decision.cell(row=2, column=6, value=f"Small (5%): ${portfolio_value * 0.05:,.0f}")
+    ws_decision.cell(row=2, column=4, value=f"Std (10%): ${portfolio_value * 0.10:,.0f}")
+    ws_decision.cell(row=2, column=6, value="Min Buy: $5")
     ws_decision.cell(row=2, column=1).font = Font(bold=True)
+
+    ws_decision.cell(row=3, column=1, value="SHORT Rules:")
+    ws_decision.cell(row=3, column=2, value=f"Max (25%): ${portfolio_value * 0.25:,.0f}")
+    ws_decision.cell(row=3, column=4, value=f"Std (10%): ${portfolio_value * 0.10:,.0f}")
+    ws_decision.cell(row=3, column=6, value="Min Short: $10")
+    ws_decision.cell(row=3, column=1).font = Font(bold=True)
+    ws_decision.cell(row=3, column=1).fill = short_fill
+    ws_decision.cell(row=3, column=1).font = Font(bold=True, color='FFFFFF')
 
     # Build decision helper data from screening results
     screen_df = results['screening_df'].copy()
     bullish_only = screen_df[screen_df['Signal'].str.contains('BULLISH', na=False)].copy()
+    bearish_only = screen_df[screen_df['Signal'].str.contains('BEARISH', na=False)].copy()
+
+    # ===== LONG CANDIDATES =====
+    ws_decision.cell(row=5, column=1, value="📈 LONG CANDIDATES (BUY)")
+    ws_decision.cell(row=5, column=1).font = Font(bold=True, size=12, color='2E7D32')
+    ws_decision.merge_cells('A5:K5')
 
     if not bullish_only.empty:
         # Calculate conviction score for each stock
@@ -466,13 +513,13 @@ def create_excel_report(results: dict, output_path: str):
         # Write headers
         headers = list(decision_df.columns)
         for col_idx, header in enumerate(headers, 1):
-            cell = ws_decision.cell(row=4, column=col_idx, value=header)
+            cell = ws_decision.cell(row=6, column=col_idx, value=header)
             cell.font = header_font
             cell.fill = header_fill
             cell.border = border
 
         # Write data with color coding
-        for row_idx, row in enumerate(decision_df.itertuples(index=False), 5):
+        for row_idx, row in enumerate(decision_df.itertuples(index=False), 7):
             for col_idx, value in enumerate(row, 1):
                 col_name = headers[col_idx - 1]
 
@@ -503,64 +550,201 @@ def create_excel_report(results: dict, output_path: str):
                     elif float(value) < 2:
                         cell.fill = bearish_fill
 
+        long_end_row = 7 + len(decision_df)
+
         # Set column widths
         col_widths = [10, 8, 12, 10, 8, 12, 10, 10, 8, 10, 25]
         for col_idx, width in enumerate(col_widths, 1):
             ws_decision.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = width
 
     else:
-        ws_decision.cell(row=4, column=1, value="No bullish setups found today - consider waiting for better opportunities")
+        ws_decision.cell(row=6, column=1, value="No bullish setups found today - consider waiting for better opportunities")
+        long_end_row = 7
+
+    # ===== SHORT CANDIDATES =====
+    short_start_row = long_end_row + 2
+    ws_decision.cell(row=short_start_row, column=1, value="📉 SHORT CANDIDATES (SELL SHORT)")
+    ws_decision.cell(row=short_start_row, column=1).font = Font(bold=True, size=12, color='FFFFFF')
+    ws_decision.cell(row=short_start_row, column=1).fill = short_fill
+    ws_decision.merge_cells(f'A{short_start_row}:K{short_start_row}')
+
+    if not bearish_only.empty:
+        # Calculate conviction score for SHORT positions
+        short_data = []
+        for _, row in bearish_only.iterrows():
+            score = 0
+            reasons = []
+
+            # Scoring criteria for SHORTS (inverse of longs)
+            num_bullish = row.get('Num_Bullish', 0) or 0
+            num_bearish = row.get('Num_Bearish', 0) or 0
+            rsi = row.get('RSI', 50) or 50
+            vol_ratio = row.get('Vol_Ratio', 1) or 1
+            rs_spy = row.get('RS_vs_SPY', 0) or 0
+            dist_200 = row.get('Dist_200_SMA', 0) or 0
+            price = row.get('Price', 0) or 0
+            atr_pct = row.get('ATR_Pct', 2) or 2
+
+            # Check minimum short price ($10)
+            if price < 10:
+                continue  # Skip stocks under $10 (competition rule)
+
+            # +2 for multiple bearish setups
+            if num_bearish >= 2:
+                score += 2
+                reasons.append("Multi-bearish")
+            elif num_bearish == 1:
+                score += 1
+
+            # -1 for any bullish signals
+            if num_bullish > 0:
+                score -= 1
+                reasons.append("Has bullish")
+
+            # +1 for RSI overbought (good for shorting)
+            if rsi > 70:
+                score += 1
+                reasons.append("Overbought")
+            elif rsi < 30:
+                score -= 1
+                reasons.append("Oversold-risky")
+
+            # +1 for high volume on down move
+            if vol_ratio > 1.2:
+                score += 1
+                reasons.append("Vol confirm")
+
+            # +1 for relative weakness (underperforming SPY)
+            if rs_spy < -3:
+                score += 1
+                reasons.append("RS weak")
+            elif rs_spy < 0:
+                score += 0.5
+
+            # +1 for broken trend (below 200 SMA)
+            if dist_200 < -5:
+                score += 1
+                reasons.append("Below 200 SMA")
+            elif dist_200 > 15:
+                score -= 1  # Too extended up - might squeeze
+
+            # Calculate position size based on score
+            if score >= 4:
+                position_pct = 0.10
+                conviction = "STRONG"
+            elif score >= 2:
+                position_pct = 0.07
+                conviction = "MODERATE"
+            else:
+                position_pct = 0.05
+                conviction = "WEAK"
+
+            position_value = portfolio_value * position_pct
+            shares = int(position_value / price) if price > 0 else 0
+            # For shorts, stop loss is ABOVE entry (cover if price rises)
+            stop_loss = price * (1 + atr_pct * 2 / 100) if price > 0 else 0
+            risk_per_share = stop_loss - price
+            total_risk = risk_per_share * shares
+
+            short_data.append({
+                'Ticker': row['Ticker'],
+                'Score': score,
+                'Conviction': conviction,
+                'Price': price,
+                'Shares': shares,
+                'Position $': position_value,
+                'Stop (Cover)': stop_loss,
+                'Risk $': total_risk,
+                'RSI': rsi,
+                'RS vs SPY': rs_spy,
+                'Reasons': ', '.join(reasons[:3])
+            })
+
+        if short_data:
+            short_df = pd.DataFrame(short_data).sort_values('Score', ascending=False)
+
+            # Write headers
+            headers = list(short_df.columns)
+            for col_idx, header in enumerate(headers, 1):
+                cell = ws_decision.cell(row=short_start_row + 1, column=col_idx, value=header)
+                cell.font = header_font
+                cell.fill = short_fill
+                cell.border = border
+
+            # Write data
+            for row_idx, row in enumerate(short_df.itertuples(index=False), short_start_row + 2):
+                for col_idx, value in enumerate(row, 1):
+                    col_name = headers[col_idx - 1]
+
+                    if col_name in ['Price', 'Stop (Cover)', 'Position $', 'Risk $']:
+                        display_val = f"${value:,.2f}" if pd.notna(value) else ""
+                    elif col_name in ['RSI', 'RS vs SPY', 'Score']:
+                        display_val = f"{value:.1f}" if pd.notna(value) else ""
+                    else:
+                        display_val = value
+
+                    cell = ws_decision.cell(row=row_idx, column=col_idx, value=display_val)
+                    cell.border = border
+
+                    if col_name == 'Conviction':
+                        if value == 'STRONG':
+                            cell.fill = short_fill
+                            cell.font = Font(bold=True, color='FFFFFF')
+        else:
+            ws_decision.cell(row=short_start_row + 1, column=1, value="No stocks meet short criteria (min $10 price)")
+    else:
+        ws_decision.cell(row=short_start_row + 1, column=1, value="No bearish setups found today")
 
     # ========== Sheet 7: Trade Journal ==========
     ws_journal = wb.create_sheet("Trade Journal")
 
     # Title and instructions
-    ws_journal.cell(row=1, column=1, value="TRADE JOURNAL - Track Your Entries & Exits")
+    ws_journal.cell(row=1, column=1, value="TRADE JOURNAL - Track Your Entries & Exits (LONG & SHORT)")
     ws_journal.cell(row=1, column=1).font = Font(bold=True, size=14)
-    ws_journal.merge_cells('A1:N1')
+    ws_journal.merge_cells('A1:P1')
 
-    ws_journal.cell(row=2, column=1, value="Instructions: Fill in Entry columns when you buy. Fill in Exit columns when you sell. P&L and Hold Days calculate automatically.")
+    ws_journal.cell(row=2, column=1, value="Instructions: Fill in columns A-I when entering. Fill in J-L when exiting. P&L auto-calculates based on Direction (LONG/SHORT).")
     ws_journal.cell(row=2, column=1).font = Font(italic=True, color='666666')
-    ws_journal.merge_cells('A2:N2')
+    ws_journal.merge_cells('A2:P2')
 
-    # Headers
+    ws_journal.cell(row=3, column=1, value="Direction: LONG = buy then sell | SHORT = sell then buy to cover. For shorts, profit = entry - exit.")
+    ws_journal.cell(row=3, column=1).font = Font(italic=True, color='9C27B0')
+    ws_journal.merge_cells('A3:P3')
+
+    # Headers - added Direction column
     journal_headers = [
-        'Ticker', 'Setup', 'Entry Date', 'Entry Price', 'Shares', 'Position $',
-        'Stop Loss', 'Target', 'Exit Date', 'Exit Price', 'Exit Reason',
+        'Ticker', 'Direction', 'Setup', 'Entry Date', 'Entry Price', 'Shares', 'Position $',
+        'Stop', 'Target', 'Exit Date', 'Exit Price', 'Exit Reason',
         'P&L $', 'P&L %', 'Hold Days', 'Notes'
     ]
     for col_idx, header in enumerate(journal_headers, 1):
-        cell = ws_journal.cell(row=4, column=col_idx, value=header)
+        cell = ws_journal.cell(row=5, column=col_idx, value=header)
         cell.font = header_font
         cell.fill = header_fill
         cell.border = border
         cell.alignment = Alignment(horizontal='center')
 
-    # Add Excel formulas for auto-calculation (rows 5-54 for 50 trades)
-    for row in range(5, 55):
-        # P&L $ formula: (Exit Price - Entry Price) * Shares
-        pnl_formula = f'=IF(AND(J{row}<>"",D{row}<>"",E{row}<>""),(J{row}-D{row})*E{row},"")'
-        ws_journal.cell(row=row, column=12, value=pnl_formula)
+    # Add Excel formulas for auto-calculation (rows 6-55 for 50 trades)
+    # P&L formula accounts for LONG vs SHORT direction
+    for row in range(6, 56):
+        # P&L $ formula: For LONG: (Exit - Entry) * Shares, For SHORT: (Entry - Exit) * Shares
+        pnl_formula = f'=IF(AND(K{row}<>"",E{row}<>"",F{row}<>""),IF(B{row}="SHORT",(E{row}-K{row})*F{row},(K{row}-E{row})*F{row}),"")'
+        ws_journal.cell(row=row, column=13, value=pnl_formula)
 
-        # P&L % formula: (Exit Price - Entry Price) / Entry Price * 100
-        pnl_pct_formula = f'=IF(AND(J{row}<>"",D{row}<>""),(J{row}-D{row})/D{row}*100,"")'
-        ws_journal.cell(row=row, column=13, value=pnl_pct_formula)
+        # P&L % formula: accounts for direction
+        pnl_pct_formula = f'=IF(AND(K{row}<>"",E{row}<>""),IF(B{row}="SHORT",(E{row}-K{row})/E{row}*100,(K{row}-E{row})/E{row}*100),"")'
+        ws_journal.cell(row=row, column=14, value=pnl_pct_formula)
 
         # Hold Days formula: Exit Date - Entry Date
-        hold_formula = f'=IF(AND(I{row}<>"",C{row}<>""),I{row}-C{row},"")'
-        ws_journal.cell(row=row, column=14, value=hold_formula)
+        hold_formula = f'=IF(AND(J{row}<>"",D{row}<>""),J{row}-D{row},"")'
+        ws_journal.cell(row=row, column=15, value=hold_formula)
 
         # Add borders to all cells
-        for col in range(1, 16):
+        for col in range(1, 17):
             ws_journal.cell(row=row, column=col).border = border
 
-    # Pre-fill some example rows with placeholder formatting
-    example_data = [
-        ['', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Example: AMZN swing trade'],
-    ]
-
     # Set column widths
-    journal_widths = [8, 15, 12, 10, 8, 12, 10, 10, 12, 10, 12, 10, 8, 10, 25]
+    journal_widths = [8, 8, 14, 11, 10, 7, 11, 9, 9, 11, 10, 11, 10, 8, 9, 22]
     for col_idx, width in enumerate(journal_widths, 1):
         ws_journal.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = width
 
@@ -568,44 +752,57 @@ def create_excel_report(results: dict, output_path: str):
     from openpyxl.formatting.rule import CellIsRule
     green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
     red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+    purple_fill = PatternFill(start_color='E1BEE7', end_color='E1BEE7', fill_type='solid')
 
-    ws_journal.conditional_formatting.add('L5:L54',
+    # P&L $ column (M) and P&L % column (N) conditional formatting
+    ws_journal.conditional_formatting.add('M6:M55',
         CellIsRule(operator='greaterThan', formula=['0'], fill=green_fill))
-    ws_journal.conditional_formatting.add('L5:L54',
+    ws_journal.conditional_formatting.add('M6:M55',
         CellIsRule(operator='lessThan', formula=['0'], fill=red_fill))
-    ws_journal.conditional_formatting.add('M5:M54',
+    ws_journal.conditional_formatting.add('N6:N55',
         CellIsRule(operator='greaterThan', formula=['0'], fill=green_fill))
-    ws_journal.conditional_formatting.add('M5:M54',
+    ws_journal.conditional_formatting.add('N6:N55',
         CellIsRule(operator='lessThan', formula=['0'], fill=red_fill))
+
+    # Direction column - highlight SHORT in purple
+    ws_journal.conditional_formatting.add('B6:B55',
+        CellIsRule(operator='equal', formula=['"SHORT"'], fill=purple_fill))
 
     # Summary section at bottom
-    ws_journal.cell(row=56, column=1, value="SUMMARY STATS")
-    ws_journal.cell(row=56, column=1).font = Font(bold=True)
+    ws_journal.cell(row=58, column=1, value="SUMMARY STATS")
+    ws_journal.cell(row=58, column=1).font = Font(bold=True, size=12)
 
-    ws_journal.cell(row=57, column=1, value="Total Trades:")
-    ws_journal.cell(row=57, column=2, value='=COUNTA(A5:A54)')
+    ws_journal.cell(row=59, column=1, value="Total Trades:")
+    ws_journal.cell(row=59, column=2, value='=COUNTA(A6:A55)')
 
-    ws_journal.cell(row=58, column=1, value="Winning Trades:")
-    ws_journal.cell(row=58, column=2, value='=COUNTIF(L5:L54,">0")')
+    ws_journal.cell(row=60, column=1, value="Long Trades:")
+    ws_journal.cell(row=60, column=2, value='=COUNTIF(B6:B55,"LONG")')
 
-    ws_journal.cell(row=59, column=1, value="Losing Trades:")
-    ws_journal.cell(row=59, column=2, value='=COUNTIF(L5:L54,"<0")')
+    ws_journal.cell(row=61, column=1, value="Short Trades:")
+    ws_journal.cell(row=61, column=2, value='=COUNTIF(B6:B55,"SHORT")')
+    ws_journal.cell(row=61, column=1).fill = purple_fill
 
-    ws_journal.cell(row=60, column=1, value="Win Rate:")
-    ws_journal.cell(row=60, column=2, value='=IF(B57>0,B58/B57*100,0)')
-    ws_journal.cell(row=60, column=3, value="%")
+    ws_journal.cell(row=62, column=1, value="Winning Trades:")
+    ws_journal.cell(row=62, column=2, value='=COUNTIF(M6:M55,">0")')
 
-    ws_journal.cell(row=61, column=1, value="Total P&L:")
-    ws_journal.cell(row=61, column=2, value='=SUM(L5:L54)')
+    ws_journal.cell(row=63, column=1, value="Losing Trades:")
+    ws_journal.cell(row=63, column=2, value='=COUNTIF(M6:M55,"<0")')
 
-    ws_journal.cell(row=62, column=1, value="Avg Hold Days:")
-    ws_journal.cell(row=62, column=2, value='=IF(COUNTA(N5:N54)>0,AVERAGE(N5:N54),0)')
+    ws_journal.cell(row=64, column=1, value="Win Rate:")
+    ws_journal.cell(row=64, column=2, value='=IF(B59>0,B62/B59*100,0)')
+    ws_journal.cell(row=64, column=3, value="%")
 
-    ws_journal.cell(row=63, column=1, value="Avg Win %:")
-    ws_journal.cell(row=63, column=2, value='=IF(B58>0,AVERAGEIF(M5:M54,">0"),0)')
+    ws_journal.cell(row=65, column=1, value="Total P&L:")
+    ws_journal.cell(row=65, column=2, value='=SUM(M6:M55)')
 
-    ws_journal.cell(row=64, column=1, value="Avg Loss %:")
-    ws_journal.cell(row=64, column=2, value='=IF(B59>0,AVERAGEIF(M5:M54,"<0"),0)')
+    ws_journal.cell(row=66, column=1, value="Avg Hold Days:")
+    ws_journal.cell(row=66, column=2, value='=IF(COUNTA(O6:O55)>0,AVERAGE(O6:O55),0)')
+
+    ws_journal.cell(row=67, column=1, value="Avg Win %:")
+    ws_journal.cell(row=67, column=2, value='=IF(B62>0,AVERAGEIF(N6:N55,">0"),0)')
+
+    ws_journal.cell(row=68, column=1, value="Avg Loss %:")
+    ws_journal.cell(row=68, column=2, value='=IF(B63>0,AVERAGEIF(N6:N55,"<0"),0)')
 
     # ========== Sheet 8: Historical Log ==========
     ws_log = wb.create_sheet("Daily Log")
@@ -738,8 +935,15 @@ def main():
     parser.add_argument(
         '--portfolio', '--pv',
         type=float,
-        default=166600,
-        help='Your portfolio value for position sizing (default: $166,600)'
+        default=DEFAULT_PORTFOLIO_VALUE,
+        help=f'Your portfolio value for position sizing (default: ${DEFAULT_PORTFOLIO_VALUE:,.0f})'
+    )
+    parser.add_argument(
+        '--date', '-d',
+        type=str,
+        default=None,
+        help='Evaluation date (YYYY-MM-DD) to get closing prices for a specific date. '
+             'Use this if you missed running the script and want historical data.'
     )
 
     args = parser.parse_args()
@@ -753,7 +957,7 @@ def main():
         tickers = get_sp500_tickers(args.top)
 
     # Run evaluation
-    results = run_daily_evaluation(tickers, period=args.period)
+    results = run_daily_evaluation(tickers, period=args.period, eval_date=args.date)
 
     # Add portfolio value to results for Decision Helper sheet
     results['portfolio_value'] = args.portfolio
@@ -768,7 +972,11 @@ def main():
     output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
     os.makedirs(output_dir, exist_ok=True)
 
-    timestamp = datetime.now().strftime('%Y%m%d')
+    # Use the evaluation date for filename if specified, otherwise today
+    if args.date:
+        timestamp = args.date.replace('-', '')
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d')
 
     if args.no_excel or not EXCEL_AVAILABLE:
         csv_dir = os.path.join(output_dir, 'daily_eval')

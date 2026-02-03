@@ -1,6 +1,12 @@
 """
 Data Collection Module for UNLV Investment Challenge
-Pulls S&P 500 top holdings and historical price data
+
+NOTE: This module is maintained for backward compatibility.
+Prefer using data_service.py instead:
+
+    from data_service import DataService
+    service = DataService()
+    df = service.fetch_stock('AAPL', period='1y')
 """
 
 import yfinance as yf

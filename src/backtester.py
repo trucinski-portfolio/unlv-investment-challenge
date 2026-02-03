@@ -2,6 +2,10 @@
 """
 Backtesting Framework for UNLV Investment Challenge
 Tests how screening signals would have performed historically
+
+NOTE: Prefer using main.py instead:
+    python main.py backtest                # Run backtest
+    python main.py backtest --optimized    # Optimized settings
 """
 
 import pandas as pd
@@ -9,12 +13,13 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from dataclasses import dataclass
-import yfinance as yf
 from tqdm import tqdm
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config import COMPETITION, RISK, BACKTEST
+from data_service import DataService
 from indicators import add_all_indicators, get_latest_indicators
 from screener import StockScreener, BULLISH_SETUPS, BEARISH_SETUPS
 
@@ -128,16 +133,16 @@ class Backtester:
     """
 
     def __init__(self,
-                 initial_capital: float = 500000,
-                 position_size_pct: float = 10,  # % of portfolio per trade
-                 stop_loss_atr_mult: float = 2.0,
-                 target_atr_mult: float = 4.0,  # 2:1 reward:risk
-                 max_hold_days: int = 20,
-                 max_positions: int = 10,
+                 initial_capital: float = None,
+                 position_size_pct: float = None,
+                 stop_loss_atr_mult: float = None,
+                 target_atr_mult: float = None,
+                 max_hold_days: int = None,
+                 max_positions: int = None,
                  exclude_setups: List[str] = None):
         """
         Args:
-            initial_capital: Starting capital
+            initial_capital: Starting capital (default from config)
             position_size_pct: Percentage of portfolio per position
             stop_loss_atr_mult: ATR multiplier for stop loss
             target_atr_mult: ATR multiplier for profit target
@@ -145,14 +150,16 @@ class Backtester:
             max_positions: Maximum concurrent positions
             exclude_setups: List of setup names to exclude (e.g., ['OVERSOLD_BOUNCE'])
         """
-        self.initial_capital = initial_capital
-        self.position_size_pct = position_size_pct
-        self.stop_loss_atr_mult = stop_loss_atr_mult
-        self.target_atr_mult = target_atr_mult
-        self.max_hold_days = max_hold_days
-        self.max_positions = max_positions
+        # Use defaults from config
+        self.initial_capital = initial_capital or COMPETITION['initial_capital']
+        self.position_size_pct = position_size_pct or BACKTEST['position_size_pct']
+        self.stop_loss_atr_mult = stop_loss_atr_mult or RISK['stop_loss_atr_mult']
+        self.target_atr_mult = target_atr_mult or RISK['target_atr_mult']
+        self.max_hold_days = max_hold_days or RISK['max_hold_days']
+        self.max_positions = max_positions or RISK['max_positions']
         self.exclude_setups = exclude_setups or []
         self.screener = StockScreener()
+        self.data_service = DataService()
 
     def _calculate_indicators_for_date(self, df: pd.DataFrame, date_idx: int,
                                         spy_df: pd.DataFrame = None) -> dict:
@@ -185,16 +192,19 @@ class Backtester:
         Returns:
             List of BacktestTrade objects
         """
-        # Fetch data
+        # Fetch data using data service
         try:
-            df = yf.download(ticker, period=period, progress=False)
-            spy_df = yf.download('SPY', period=period, progress=False)
+            df = self.data_service.fetch_stock(ticker, period=period)
+            spy_df = self.data_service.fetch_spy(period=period)
 
-            if df.empty:
+            if df is None or df.empty:
                 return []
 
-            df = df.reset_index()
-            spy_df = spy_df.reset_index()
+            # Ensure we have reset index (data_service already does this)
+            if 'Date' not in df.columns:
+                df = df.reset_index()
+            if spy_df is not None and 'Date' not in spy_df.columns:
+                spy_df = spy_df.reset_index()
         except Exception as e:
             print(f"Error fetching {ticker}: {e}")
             return []
@@ -492,23 +502,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Based on backtest analysis, excluding OVERSOLD_BOUNCE improves Sharpe from 0.41 to 0.50
-    exclude_setups = ['OVERSOLD_BOUNCE'] if args.optimized else []
+    # Use optimized settings from config if requested
+    exclude_setups = BACKTEST['exclude_setups'] if args.optimized else []
 
-    print("\n=== UNLV Investment Challenge Backtester ===")
+    print("\n=== ASTRYX INVESTING - Backtester ===")
     print(f"Period: {args.period}")
     print(f"Tickers: {len(args.tickers)} stocks")
-    print(f"Mode: {'Optimized (excluding OVERSOLD_BOUNCE)' if args.optimized else 'All Setups'}")
+    print(f"Mode: {'Optimized' if args.optimized else 'All Setups'}")
 
-    # Single backtest
-    bt = Backtester(
-        initial_capital=500000,
-        position_size_pct=10,
-        stop_loss_atr_mult=2.0,
-        target_atr_mult=4.0,
-        max_hold_days=20,
-        exclude_setups=exclude_setups
-    )
+    # Single backtest (uses config defaults)
+    bt = Backtester(exclude_setups=exclude_setups)
 
     result = bt.backtest_universe(args.tickers, period=args.period)
     mode_name = "OPTIMIZED" if args.optimized else "ALL SETUPS"
