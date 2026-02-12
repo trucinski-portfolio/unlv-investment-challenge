@@ -1,0 +1,39 @@
+# --- Security & Credentials ---
+.env
+.env.local
+.env.*
+secrets.py
+credentials.json
+*.pem
+
+# --- Python / Machine Learning ---
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
+# Ignore large datasets 
+data/*.csv
+data/*.json
+!data/sample.csv 
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+bin/
+lib/
+include/
+
+# --- macOS System Files ---
+.DS_Store
+.AppleDesktop
+.LSOverride
+
+# --- IDEs and Tools ---
+.vscode/
+.idea/
+*.swp
+
+# --- Other ---
+PLAN.md
+.claude/
