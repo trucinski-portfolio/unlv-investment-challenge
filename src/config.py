@@ -6,41 +6,26 @@ All constants and settings in one place
 from typing import Dict, List
 
 # =============================================================================
-# COMPETITION RULES (UNLV Spring 2026 Investment Challenge)
-# =============================================================================
-COMPETITION = {
-    'initial_capital': 500_000,
-    'max_single_position_pct': 25,    # Max 25% in any single security
-    'max_etf_pct': 50,                # Max 50% in ETFs/funds
-    'min_buy_price': 5.00,            # Minimum $5 to buy
-    'min_short_price': 10.00,         # Minimum $10 to short
-    'min_trades': 10,                 # Must make at least 10 trades
-    'no_day_trading': True,           # Can't buy and sell same day
-}
-
-# Your current portfolio value (update as needed)
-DEFAULT_PORTFOLIO_VALUE = 166_600
-
-# =============================================================================
 # WATCHLIST & TICKERS
 # =============================================================================
 WATCHLIST: List[str] = [
+    # Tech (core)
     'MSFT', 'META', 'NVDA', 'AAPL', 'TSLA', 'GOOGL',
-    'AMZN', 'AMD', 'NFLX', 'CRM', 'AVGO', 'COST'
-]
-
-# Top 100 S&P 500 by market cap (for quick scans)
-SP500_TOP_100: List[str] = [
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
-    'XOM', 'JPM', 'V', 'PG', 'MA', 'HD', 'CVX', 'LLY', 'ABBV', 'MRK',
-    'PEP', 'COST', 'AVGO', 'KO', 'WMT', 'MCD', 'CSCO', 'TMO', 'ACN', 'ABT',
-    'DHR', 'BAC', 'CRM', 'NKE', 'PFE', 'CMCSA', 'DIS', 'VZ', 'ADBE', 'NFLX',
-    'INTC', 'WFC', 'TXN', 'PM', 'RTX', 'NEE', 'T', 'BMY', 'COP', 'ORCL',
-    'UPS', 'MS', 'HON', 'QCOM', 'UNP', 'LOW', 'IBM', 'AMD', 'CAT', 'SPGI',
-    'GE', 'SBUX', 'BA', 'INTU', 'AMGN', 'DE', 'GS', 'ELV', 'BLK', 'ISRG',
-    'GILD', 'AXP', 'LMT', 'MDLZ', 'ADI', 'BKNG', 'TJX', 'MMC', 'SYK', 'CVS',
-    'REGN', 'VRTX', 'PLD', 'ADP', 'LRCX', 'CI', 'TMUS', 'MO', 'CB', 'ZTS',
-    'SO', 'SCHW', 'DUK', 'CME', 'BDX', 'EOG', 'CL', 'SLB', 'ITW', 'NOC'
+    'AMZN', 'AMD', 'NFLX', 'CRM', 'AVGO', 'COST',
+    # Tech (extended)
+    'ADBE', 'NOW', 'SNPS', 'ANET', 'MRVL', 'PANW',
+    # Financials
+    'JPM', 'V', 'MA', 'GS',
+    # Healthcare
+    'UNH', 'LLY', 'ISRG',
+    # Industrials
+    'CAT', 'GE', 'LMT',
+    # Energy
+    'XOM', 'COP',
+    # Consumer
+    'HD', 'MCD', 'SBUX',
+    # Semis (extra)
+    'KLAC', 'LRCX', 'ASML',
 ]
 
 # Sector ETFs for market overview
@@ -92,24 +77,6 @@ INDICATORS = {
 }
 
 # =============================================================================
-# POSITION SIZING & RISK MANAGEMENT
-# =============================================================================
-RISK = {
-    'default_risk_pct': 1.0,          # Risk 1% of portfolio per trade
-    'stop_loss_atr_mult': 2.0,        # Stop loss = entry - 2*ATR
-    'target_atr_mult': 4.0,           # Target = entry + 4*ATR (2:1 R:R)
-    'max_positions': 10,              # Max concurrent positions
-    'max_hold_days': 20,              # Max days to hold (for backtesting)
-}
-
-# Position sizing by conviction level
-POSITION_SIZING = {
-    'strong': 0.10,      # 10% for high conviction (score >= 4)
-    'moderate': 0.07,    # 7% for moderate (score 2-3)
-    'weak': 0.05,        # 5% for weak (score < 2)
-}
-
-# =============================================================================
 # SCREENING THRESHOLDS
 # =============================================================================
 SCREENING = {
@@ -135,12 +102,54 @@ SCREENING = {
 }
 
 # =============================================================================
-# BACKTEST SETTINGS
+# FUNDAMENTAL DATA FIELDS
 # =============================================================================
-BACKTEST = {
-    'default_period': '2y',
-    'position_size_pct': 10,
-    'exclude_setups': ['OVERSOLD_BOUNCE'],  # Based on backtest analysis
+FUNDAMENTALS = {
+    'valuation': [
+        'trailingPE', 'forwardPE', 'pegRatio',
+        'priceToSalesTrailing12Months', 'enterpriseToEbitda',
+    ],
+    'growth': [
+        'revenueGrowth', 'earningsGrowth', 'earningsQuarterlyGrowth',
+    ],
+    'profitability': [
+        'returnOnEquity', 'profitMargins', 'freeCashflow',
+        'operatingMargins', 'grossMargins',
+    ],
+    'health': [
+        'debtToEquity', 'currentRatio', 'shortPercentOfFloat', 'shortRatio',
+    ],
+    'identity': [
+        'longName', 'shortName', 'sector', 'industry',
+        'marketCap', 'beta', 'averageVolume', 'dividendYield',
+    ],
+}
+
+# Human-readable labels for fundamental fields
+FUNDAMENTAL_LABELS = {
+    'trailingPE': 'P/E (TTM)',
+    'forwardPE': 'P/E (Fwd)',
+    'pegRatio': 'PEG Ratio',
+    'priceToSalesTrailing12Months': 'P/S',
+    'enterpriseToEbitda': 'EV/EBITDA',
+    'revenueGrowth': 'Rev Growth',
+    'earningsGrowth': 'Earnings Growth',
+    'earningsQuarterlyGrowth': 'Qtr Earnings Growth',
+    'returnOnEquity': 'ROE',
+    'profitMargins': 'Profit Margin',
+    'freeCashflow': 'Free Cash Flow',
+    'operatingMargins': 'Operating Margin',
+    'grossMargins': 'Gross Margin',
+    'debtToEquity': 'Debt/Equity',
+    'currentRatio': 'Current Ratio',
+    'shortPercentOfFloat': 'Short % Float',
+    'shortRatio': 'Short Ratio',
+    'marketCap': 'Market Cap',
+    'beta': 'Beta',
+    'averageVolume': 'Avg Volume',
+    'dividendYield': 'Div Yield',
+    'sector': 'Sector',
+    'industry': 'Industry',
 }
 
 # =============================================================================
@@ -151,3 +160,30 @@ OUTPUT = {
     'chart_dpi': 150,
     'default_period': '1y',
 }
+
+
+def get_figures_dir(base_output_dir: str, date=None) -> str:
+    """
+    Get the date-based figures directory path (e.g., output/2026.02.11-figures).
+
+    Args:
+        base_output_dir: The base output directory (e.g., .../output)
+        date: Optional date string (YYYY-MM-DD) or datetime. Defaults to today.
+
+    Returns:
+        Path like .../output/2026.02.11-figures
+    """
+    import os
+    from datetime import datetime as dt
+
+    if date is None:
+        date_str = dt.now().strftime('%Y.%m.%d')
+    elif isinstance(date, str):
+        # Convert YYYY-MM-DD to YYYY.MM.DD
+        date_str = date.replace('-', '.')
+    else:
+        date_str = date.strftime('%Y.%m.%d')
+
+    figures_dir = os.path.join(base_output_dir, f'{date_str}-figures')
+    os.makedirs(figures_dir, exist_ok=True)
+    return figures_dir

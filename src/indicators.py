@@ -1,5 +1,5 @@
 """
-Technical Indicators Module for UNLV Investment Challenge
+ASTRYX INVESTING - Technical Indicators Module
 Calculates RSI, MACD, volume trends, relative strength, and more
 """
 

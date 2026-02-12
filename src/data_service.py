@@ -5,33 +5,31 @@ Single source of truth for all data fetching operations
 
 import yfinance as yf
 import pandas as pd
+import json
+import os
 from datetime import datetime, date
 from typing import Dict, List, Optional, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-import time
 
-from config import SP500_TOP_100, SECTOR_ETFS, INDICATORS
+from config import SECTOR_ETFS, FUNDAMENTALS
+
+# Cache directory for persistent caching between runs
+_CACHE_DIR = os.path.join(os.path.dirname(__file__), '..', 'output', '.cache')
 
 
 class DataService:
     """
     Centralized data fetching service.
-    Use this instead of scattered yfinance calls throughout the codebase.
+    Uses batch yfinance downloads and parallel fundamentals fetching.
     """
 
     def __init__(self, cache_enabled: bool = True):
-        """
-        Initialize the data service.
-
-        Args:
-            cache_enabled: Whether to cache fetched data in memory
-        """
         self.cache_enabled = cache_enabled
         self._cache: Dict[str, pd.DataFrame] = {}
         self._spy_cache: Optional[pd.DataFrame] = None
 
     def clear_cache(self):
-        """Clear all cached data"""
         self._cache.clear()
         self._spy_cache = None
 
@@ -41,21 +39,9 @@ class DataService:
 
     def fetch_stock(self, ticker: str, period: str = "1y",
                     interval: str = "1d", use_cache: bool = True) -> Optional[pd.DataFrame]:
-        """
-        Fetch historical data for a single ticker.
-
-        Args:
-            ticker: Stock symbol (e.g., 'AAPL')
-            period: Data period ('6mo', '1y', '2y', '5y', 'max')
-            interval: Data interval ('1d', '1wk', '1mo')
-            use_cache: Whether to use cached data if available
-
-        Returns:
-            DataFrame with OHLCV data, or None if fetch fails
-        """
+        """Fetch historical data for a single ticker."""
         cache_key = f"{ticker}_{period}_{interval}"
 
-        # Check cache
         if use_cache and self.cache_enabled and cache_key in self._cache:
             return self._cache[cache_key].copy()
 
@@ -66,10 +52,8 @@ class DataService:
             if df.empty:
                 return None
 
-            # Standardize the dataframe
             df = self._standardize_dataframe(df, ticker)
 
-            # Cache if enabled
             if self.cache_enabled:
                 self._cache[cache_key] = df.copy()
 
@@ -80,50 +64,80 @@ class DataService:
             return None
 
     def fetch_multiple(self, tickers: List[str], period: str = "1y",
-                       interval: str = "1d", delay: float = 0.1,
+                       interval: str = "1d",
                        show_progress: bool = True) -> Dict[str, pd.DataFrame]:
         """
-        Fetch historical data for multiple tickers.
-
-        Args:
-            tickers: List of stock symbols
-            period: Data period
-            interval: Data interval
-            delay: Delay between requests (to avoid rate limiting)
-            show_progress: Whether to show progress bar
-
-        Returns:
-            Dictionary of {ticker: DataFrame}
+        Fetch historical data for multiple tickers using yfinance batch download.
+        Much faster than serial fetching — downloads all tickers in parallel.
         """
+        if not tickers:
+            return {}
+
         data = {}
         failed = []
 
-        iterator = tqdm(tickers, desc="Fetching") if show_progress else tickers
+        # Use yf.download for batch fetching (much faster than serial)
+        chunk_size = 50
+        chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 
-        for ticker in iterator:
-            df = self.fetch_stock(ticker, period, interval)
-            if df is not None and not df.empty:
-                data[ticker] = df
-            else:
-                failed.append(ticker)
-            time.sleep(delay)
+        if show_progress:
+            print(f"  Downloading {len(tickers)} tickers in {len(chunks)} batch(es)...")
+
+        for chunk_idx, chunk in enumerate(chunks):
+            try:
+                batch_df = yf.download(
+                    chunk,
+                    period=period,
+                    interval=interval,
+                    group_by='ticker',
+                    threads=True,
+                    progress=show_progress and chunk_idx == 0,
+                )
+
+                if batch_df.empty:
+                    failed.extend(chunk)
+                    continue
+
+                # Single ticker returns flat columns, multiple returns MultiIndex
+                if len(chunk) == 1:
+                    ticker = chunk[0]
+                    df = batch_df.copy()
+                    df = self._standardize_dataframe(df, ticker)
+                    if not df.empty:
+                        data[ticker] = df
+                        if self.cache_enabled:
+                            self._cache[f"{ticker}_{period}_{interval}"] = df.copy()
+                    else:
+                        failed.append(ticker)
+                else:
+                    for ticker in chunk:
+                        try:
+                            if ticker in batch_df.columns.get_level_values(0):
+                                ticker_df = batch_df[ticker].copy()
+                                ticker_df = ticker_df.dropna(how='all')
+                                if not ticker_df.empty:
+                                    ticker_df = self._standardize_dataframe(ticker_df, ticker)
+                                    data[ticker] = ticker_df
+                                    if self.cache_enabled:
+                                        self._cache[f"{ticker}_{period}_{interval}"] = ticker_df.copy()
+                                else:
+                                    failed.append(ticker)
+                            else:
+                                failed.append(ticker)
+                        except Exception:
+                            failed.append(ticker)
+
+            except Exception as e:
+                print(f"  Batch download error: {e}")
+                failed.extend(chunk)
 
         if failed and show_progress:
-            print(f"  Failed: {', '.join(failed)}")
+            print(f"  Failed ({len(failed)}): {', '.join(failed[:10])}{'...' if len(failed) > 10 else ''}")
 
         return data
 
     def fetch_spy(self, period: str = "1y", use_cache: bool = True) -> Optional[pd.DataFrame]:
-        """
-        Fetch SPY benchmark data.
-
-        Args:
-            period: Data period
-            use_cache: Whether to use cached SPY data
-
-        Returns:
-            DataFrame with SPY data
-        """
+        """Fetch SPY benchmark data."""
         if use_cache and self._spy_cache is not None:
             return self._spy_cache.copy()
 
@@ -135,19 +149,10 @@ class DataService:
         return df
 
     def fetch_sectors(self, period: str = "5d") -> Dict[str, pd.DataFrame]:
-        """
-        Fetch sector ETF data.
-
-        Args:
-            period: Data period
-
-        Returns:
-            Dictionary of {etf_symbol: DataFrame}
-        """
+        """Fetch sector ETF data."""
         return self.fetch_multiple(
             list(SECTOR_ETFS.keys()),
             period=period,
-            delay=0.05,
             show_progress=False
         )
 
@@ -157,21 +162,10 @@ class DataService:
 
     def filter_to_date(self, df: pd.DataFrame,
                        target_date: Union[str, date, datetime]) -> pd.DataFrame:
-        """
-        Filter dataframe to include only data up to and including target date.
-        Use this when you need historical closing prices for a specific date.
-
-        Args:
-            df: DataFrame with datetime index
-            target_date: The date to filter to (string 'YYYY-MM-DD' or date object)
-
-        Returns:
-            Filtered DataFrame
-        """
+        """Filter dataframe to include only data up to and including target date."""
         if df is None or df.empty:
             return df
 
-        # Convert target_date to date object
         if isinstance(target_date, str):
             target_dt = pd.to_datetime(target_date).date()
         elif isinstance(target_date, datetime):
@@ -179,7 +173,6 @@ class DataService:
         else:
             target_dt = target_date
 
-        # Get the date column or index
         if 'Date' in df.columns:
             df_dates = pd.to_datetime(df['Date']).dt.date
             mask = df_dates <= target_dt
@@ -197,16 +190,7 @@ class DataService:
 
     def get_closing_price(self, df: pd.DataFrame,
                           target_date: Optional[Union[str, date]] = None) -> float:
-        """
-        Get the closing price for a specific date (or most recent).
-
-        Args:
-            df: DataFrame with price data
-            target_date: Optional date to get price for
-
-        Returns:
-            Closing price as float
-        """
+        """Get the closing price for a specific date (or most recent)."""
         if df is None or df.empty:
             return 0.0
 
@@ -215,86 +199,181 @@ class DataService:
 
         close_col = df['Close']
 
-        # Handle multi-index columns from yfinance
         if hasattr(close_col.iloc[-1], 'iloc'):
             return float(close_col.iloc[-1].iloc[0])
         return float(close_col.iloc[-1])
 
     # =========================================================================
-    # STOCK INFO & METADATA
+    # FUNDAMENTALS
     # =========================================================================
 
-    def get_stock_info(self, ticker: str) -> dict:
+    def get_fundamentals(self, ticker: str) -> dict:
         """
-        Get basic stock info (sector, industry, market cap, etc.)
-
-        Args:
-            ticker: Stock symbol
-
-        Returns:
-            Dictionary with stock metadata
+        Get comprehensive fundamental data for a single ticker.
+        Includes valuation, growth, profitability, and health metrics.
         """
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
-            return {
-                'ticker': ticker,
-                'name': info.get('longName', info.get('shortName', ticker)),
-                'sector': info.get('sector', 'Unknown'),
-                'industry': info.get('industry', 'Unknown'),
-                'market_cap': info.get('marketCap', 0),
-                'avg_volume': info.get('averageVolume', 0),
-                'beta': info.get('beta', 1.0),
-                'pe_ratio': info.get('trailingPE'),
-                'dividend_yield': info.get('dividendYield'),
-            }
+
+            result = {'ticker': ticker}
+
+            # Pull all configured fundamental fields
+            for category, fields in FUNDAMENTALS.items():
+                for field in fields:
+                    result[field] = info.get(field)
+
+            # Derive a clean name
+            result['name'] = info.get('longName', info.get('shortName', ticker))
+
+            return result
+
         except Exception:
-            return {
-                'ticker': ticker,
-                'name': ticker,
-                'sector': 'Unknown',
-                'industry': 'Unknown',
-                'market_cap': 0,
-                'avg_volume': 0,
-                'beta': 1.0,
-                'pe_ratio': None,
-                'dividend_yield': None,
-            }
+            result = {'ticker': ticker, 'name': ticker}
+            for category, fields in FUNDAMENTALS.items():
+                for field in fields:
+                    result[field] = None
+            return result
 
-    def fetch_metadata(self, tickers: List[str],
-                       show_progress: bool = True) -> pd.DataFrame:
+    def fetch_fundamentals_batch(self, tickers: List[str],
+                                 max_workers: int = 8,
+                                 show_progress: bool = True,
+                                 use_cache: bool = True) -> pd.DataFrame:
         """
-        Fetch metadata for multiple stocks.
-
-        Args:
-            tickers: List of stock symbols
-            show_progress: Whether to show progress bar
-
-        Returns:
-            DataFrame with stock metadata
+        Fetch fundamentals for multiple tickers in parallel.
+        Caches results to disk daily to avoid repeated slow API calls.
         """
-        metadata = []
-        iterator = tqdm(tickers, desc="Getting info") if show_progress else tickers
+        # Check disk cache first
+        if use_cache:
+            cached = self._load_fundamentals_cache(tickers)
+            if cached is not None:
+                return cached
 
-        for ticker in iterator:
-            info = self.get_stock_info(ticker)
-            metadata.append(info)
-            time.sleep(0.05)
+        results = []
+        failed = []
 
-        return pd.DataFrame(metadata)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.get_fundamentals, t): t for t in tickers}
+
+            if show_progress:
+                pbar = tqdm(total=len(tickers), desc="Fundamentals")
+
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception:
+                    failed.append(ticker)
+                if show_progress:
+                    pbar.update(1)
+
+            if show_progress:
+                pbar.close()
+
+        if failed:
+            print(f"  Failed fundamentals ({len(failed)}): {', '.join(failed[:10])}")
+
+        df = pd.DataFrame(results)
+
+        # Save to disk cache
+        if use_cache and not df.empty:
+            self._save_fundamentals_cache(df)
+
+        return df
+
+    def _load_fundamentals_cache(self, tickers: List[str]) -> Optional[pd.DataFrame]:
+        """Load cached fundamentals from disk if fresh (same day)."""
+        cache_file = os.path.join(
+            _CACHE_DIR, f"fundamentals_{datetime.now().strftime('%Y%m%d')}.json"
+        )
+        if not os.path.exists(cache_file):
+            return None
+
+        try:
+            df = pd.read_json(cache_file)
+            # Check if cache has all requested tickers
+            cached_tickers = set(df['ticker'].tolist())
+            requested = set(tickers)
+            if requested.issubset(cached_tickers):
+                print("  Using cached fundamentals (today's data)")
+                return df[df['ticker'].isin(requested)].reset_index(drop=True)
+            return None
+        except Exception:
+            return None
+
+    def _save_fundamentals_cache(self, df: pd.DataFrame):
+        """Save fundamentals to disk cache."""
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        cache_file = os.path.join(
+            _CACHE_DIR, f"fundamentals_{datetime.now().strftime('%Y%m%d')}.json"
+        )
+
+        # Merge with existing cache if present
+        if os.path.exists(cache_file):
+            try:
+                existing = pd.read_json(cache_file)
+                # Update existing entries, add new ones
+                combined = pd.concat([existing, df]).drop_duplicates(
+                    subset='ticker', keep='last'
+                ).reset_index(drop=True)
+                combined.to_json(cache_file, orient='records', indent=2)
+                return
+            except Exception:
+                pass
+
+        df.to_json(cache_file, orient='records', indent=2)
 
     # =========================================================================
-    # TICKER LISTS
+    # S&P 500 TICKER LIST
     # =========================================================================
 
     @staticmethod
-    def get_sp500_tickers(top_n: int = 100) -> List[str]:
-        """Return top N S&P 500 tickers by market cap weight"""
-        return SP500_TOP_100[:top_n]
+    def get_sp500_tickers(top_n: Optional[int] = None) -> List[str]:
+        """
+        Get S&P 500 tickers by scraping Wikipedia.
+        Caches the list locally for a week to avoid repeated scraping.
+        Returns all ~500 tickers by default.
+        """
+        cache_file = os.path.join(_CACHE_DIR, 'sp500_tickers.json')
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+
+        # Check cache (refresh weekly)
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    cached = json.load(f)
+                cache_date = datetime.strptime(cached['date'], '%Y-%m-%d')
+                if (datetime.now() - cache_date).days < 7:
+                    tickers = cached['tickers']
+                    return tickers[:top_n] if top_n else tickers
+            except Exception:
+                pass
+
+        # Scrape Wikipedia
+        try:
+            tables = pd.read_html(
+                'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+            )
+            df = tables[0]
+            tickers = df['Symbol'].str.replace('.', '-', regex=False).tolist()
+
+            # Save cache
+            with open(cache_file, 'w') as f:
+                json.dump({
+                    'date': datetime.now().strftime('%Y-%m-%d'),
+                    'tickers': tickers,
+                }, f)
+
+            print(f"  Loaded {len(tickers)} S&P 500 tickers from Wikipedia")
+            return tickers[:top_n] if top_n else tickers
+
+        except Exception as e:
+            print(f"  Wikipedia scrape failed ({e}), using fallback list")
+            return _SP500_FALLBACK[:top_n] if top_n else _SP500_FALLBACK
 
     @staticmethod
     def get_sector_etfs() -> Dict[str, str]:
-        """Return sector ETF mapping"""
         return SECTOR_ETFS.copy()
 
     # =========================================================================
@@ -302,78 +381,117 @@ class DataService:
     # =========================================================================
 
     def _standardize_dataframe(self, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
-        """Standardize DataFrame format for consistency"""
         df = df.reset_index()
         df['Ticker'] = ticker
 
-        # Handle multi-index columns from yfinance bulk downloads
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
-        # Standardize column names
         df.columns = [col.replace(' ', '_') for col in df.columns]
-
         return df
 
     def flatten_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Flatten multi-index columns that yfinance sometimes returns.
-        Call this if you're getting weird column issues.
-        """
         if df is None:
             return df
-
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-
         return df
 
 
 # =============================================================================
 # MODULE-LEVEL CONVENIENCE FUNCTIONS
 # =============================================================================
-# These provide backward compatibility with the old data_collector.py interface
 
 _default_service = None
 
 
 def _get_service() -> DataService:
-    """Get or create the default DataService instance"""
     global _default_service
     if _default_service is None:
         _default_service = DataService()
     return _default_service
 
 
-def get_sp500_tickers(top_n: int = 100) -> List[str]:
-    """Return top N S&P 500 tickers by market cap weight"""
+def get_sp500_tickers(top_n: Optional[int] = None) -> List[str]:
     return DataService.get_sp500_tickers(top_n)
 
 
-def fetch_stock_data(ticker: str, period: str = "2y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch historical data for a single ticker"""
+def fetch_stock_data(ticker: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
     return _get_service().fetch_stock(ticker, period, interval)
 
 
-def fetch_bulk_data(tickers: List[str], period: str = "2y",
-                    interval: str = "1d", delay: float = 0.1) -> Dict[str, pd.DataFrame]:
-    """Fetch historical data for multiple tickers"""
-    return _get_service().fetch_multiple(tickers, period, interval, delay)
+def fetch_bulk_data(tickers: List[str], period: str = "1y",
+                    interval: str = "1d") -> Dict[str, pd.DataFrame]:
+    return _get_service().fetch_multiple(tickers, period, interval)
 
 
-def fetch_spy_benchmark(period: str = "2y") -> Optional[pd.DataFrame]:
-    """Fetch SPY data for relative strength calculations"""
+def fetch_spy_benchmark(period: str = "1y") -> Optional[pd.DataFrame]:
     return _get_service().fetch_spy(period)
 
 
 def get_stock_info(ticker: str) -> dict:
-    """Get basic stock info"""
-    return _get_service().get_stock_info(ticker)
+    return _get_service().get_fundamentals(ticker)
 
 
 def fetch_stock_metadata(tickers: List[str]) -> pd.DataFrame:
-    """Fetch metadata for multiple stocks"""
-    return _get_service().fetch_metadata(tickers)
+    return _get_service().fetch_fundamentals_batch(tickers)
+
+
+# =============================================================================
+# FALLBACK S&P 500 LIST (if Wikipedia scrape fails)
+# =============================================================================
+_SP500_FALLBACK = [
+    'AAPL', 'ABBV', 'ABT', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE',
+    'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALK',
+    'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN',
+    'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO',
+    'ATVI', 'AVB', 'AVGO', 'AVY', 'AWK', 'AXP', 'AZO', 'BA', 'BAC', 'BAX',
+    'BBWI', 'BBY', 'BDX', 'BEN', 'BF-B', 'BIIB', 'BIO', 'BK', 'BKNG', 'BKR',
+    'BLK', 'BMY', 'BR', 'BRK-B', 'BRO', 'BSX', 'BWA', 'BXP', 'C', 'CAG',
+    'CAH', 'CARR', 'CAT', 'CB', 'CBOE', 'CBRE', 'CCI', 'CCL', 'CDAY', 'CDNS',
+    'CDW', 'CE', 'CEG', 'CF', 'CFG', 'CHD', 'CHRW', 'CHTR', 'CI', 'CINF',
+    'CL', 'CLX', 'CMA', 'CMCSA', 'CME', 'CMG', 'CMI', 'CMS', 'CNC', 'CNP',
+    'COF', 'COO', 'COP', 'COST', 'CPB', 'CPRT', 'CPT', 'CRC', 'CRL', 'CRM',
+    'CSCO', 'CSGP', 'CSX', 'CTAS', 'CTLT', 'CTRA', 'CTSH', 'CTVA', 'CVS', 'CVX',
+    'CZR', 'D', 'DAL', 'DD', 'DE', 'DFS', 'DG', 'DGX', 'DHI', 'DHR',
+    'DIS', 'DISH', 'DLR', 'DLTR', 'DOV', 'DOW', 'DPZ', 'DRI', 'DTE', 'DUK',
+    'DVA', 'DVN', 'DXC', 'DXCM', 'EA', 'EBAY', 'ECL', 'ED', 'EFX', 'EIX',
+    'EL', 'EMN', 'EMR', 'ENPH', 'EOG', 'EPAM', 'EQIX', 'EQR', 'EQT', 'ES',
+    'ESS', 'ETN', 'ETR', 'ETSY', 'EVRG', 'EW', 'EXC', 'EXPD', 'EXPE', 'EXR',
+    'F', 'FANG', 'FAST', 'FBHS', 'FCX', 'FDS', 'FDX', 'FE', 'FFIV', 'FIS',
+    'FISV', 'FITB', 'FLT', 'FMC', 'FOX', 'FOXA', 'FRC', 'FRT', 'FTNT', 'FTV',
+    'GD', 'GE', 'GILD', 'GIS', 'GL', 'GLW', 'GM', 'GNRC', 'GOOG', 'GOOGL',
+    'GPC', 'GPN', 'GRMN', 'GS', 'GWW', 'HAL', 'HAS', 'HBAN', 'HCA', 'HD',
+    'PEAK', 'HES', 'HIG', 'HII', 'HLT', 'HOLX', 'HON', 'HPE', 'HPQ', 'HRL',
+    'HSIC', 'HST', 'HSY', 'HUM', 'HWM', 'IBM', 'ICE', 'IDXX', 'IEX', 'IFF',
+    'ILMN', 'INCY', 'INTC', 'INTU', 'INVH', 'IP', 'IPG', 'IQV', 'IR', 'IRM',
+    'ISRG', 'IT', 'ITW', 'IVZ', 'J', 'JBHT', 'JCI', 'JKHY', 'JNJ', 'JNPR',
+    'JPM', 'K', 'KDP', 'KEY', 'KEYS', 'KHC', 'KIM', 'KLAC', 'KMB', 'KMI',
+    'KMX', 'KO', 'KR', 'L', 'LDOS', 'LEN', 'LH', 'LHX', 'LIN', 'LKQ',
+    'LLY', 'LMT', 'LNC', 'LNT', 'LOW', 'LRCX', 'LUMN', 'LUV', 'LVS', 'LW',
+    'LYB', 'LYV', 'MA', 'MAA', 'MAR', 'MAS', 'MCD', 'MCHP', 'MCK', 'MCO',
+    'MDLZ', 'MDT', 'MET', 'META', 'MGM', 'MHK', 'MKC', 'MKTX', 'MLM', 'MMC',
+    'MMM', 'MNST', 'MO', 'MOH', 'MOS', 'MPC', 'MPWR', 'MRK', 'MRNA', 'MRO',
+    'MS', 'MSCI', 'MSFT', 'MSI', 'MTB', 'MTCH', 'MTD', 'MU', 'NCLH', 'NDAQ',
+    'NDSN', 'NEE', 'NEM', 'NFLX', 'NI', 'NKE', 'NOC', 'NOW', 'NRG', 'NSC',
+    'NTAP', 'NTRS', 'NUE', 'NVDA', 'NVR', 'NWL', 'NWS', 'NWSA', 'NXPI', 'O',
+    'ODFL', 'OGN', 'OKE', 'OMC', 'ON', 'ORCL', 'ORLY', 'OTIS', 'OXY', 'PARA',
+    'PAYC', 'PAYX', 'PCAR', 'PCG', 'PEAK', 'PEG', 'PEP', 'PFE', 'PFG', 'PG',
+    'PGR', 'PH', 'PHM', 'PKG', 'PKI', 'PLD', 'PM', 'PNC', 'PNR', 'PNW',
+    'POOL', 'PPG', 'PPL', 'PRU', 'PSA', 'PSX', 'PTC', 'PVH', 'PWR', 'PXD',
+    'PYPL', 'QCOM', 'QRVO', 'RCL', 'RE', 'REG', 'REGN', 'RF', 'RHI', 'RJF',
+    'RL', 'RMD', 'ROK', 'ROL', 'ROP', 'ROST', 'RSG', 'RTX', 'SBAC', 'SBNY',
+    'SBUX', 'SCHW', 'SEE', 'SHW', 'SIVB', 'SJM', 'SLB', 'SNA', 'SNPS', 'SO',
+    'SPG', 'SPGI', 'SRE', 'STE', 'STT', 'STX', 'STZ', 'SWK', 'SWKS', 'SYF',
+    'SYK', 'SYY', 'T', 'TAP', 'TDG', 'TDY', 'TECH', 'TEL', 'TER', 'TFC',
+    'TFX', 'TGT', 'TJX', 'TMO', 'TMUS', 'TPR', 'TRGP', 'TRMB', 'TROW', 'TRV',
+    'TSCO', 'TSLA', 'TSN', 'TT', 'TTWO', 'TXN', 'TXT', 'TYL', 'UAL', 'UDR',
+    'UHS', 'ULTA', 'UNH', 'UNP', 'UPS', 'URI', 'USB', 'V', 'VFC', 'VICI',
+    'VLO', 'VMC', 'VNO', 'VRSK', 'VRSN', 'VRTX', 'VTR', 'VTRS', 'VZ', 'WAB',
+    'WAT', 'WBA', 'WBD', 'WDC', 'WEC', 'WELL', 'WFC', 'WHR', 'WM', 'WMB',
+    'WMT', 'WRB', 'WRK', 'WST', 'WTW', 'WY', 'WYNN', 'XEL', 'XOM', 'XRAY',
+    'XYL', 'YUM', 'ZBH', 'ZBRA', 'ZION', 'ZTS',
+]
 
 
 # =============================================================================
@@ -384,30 +502,29 @@ if __name__ == "__main__":
 
     service = DataService()
 
+    # Test S&P 500 ticker list
+    print("Testing S&P 500 ticker list...")
+    tickers = service.get_sp500_tickers()
+    print(f"  Got {len(tickers)} tickers")
+
     # Test single fetch
-    print("Testing single stock fetch...")
+    print("\nTesting single stock fetch...")
     aapl = service.fetch_stock('AAPL', period='6mo')
     if aapl is not None:
         print(f"  AAPL: {len(aapl)} days")
         print(f"  Latest close: ${service.get_closing_price(aapl):.2f}")
 
-    # Test SPY benchmark
-    print("\nTesting SPY benchmark...")
-    spy = service.fetch_spy(period='6mo')
-    if spy is not None:
-        print(f"  SPY: {len(spy)} days")
-
-    # Test date filtering
-    print("\nTesting date filtering...")
-    if aapl is not None:
-        filtered = service.filter_to_date(aapl, '2025-12-31')
-        print(f"  Filtered to 2025-12-31: {len(filtered)} days")
-        print(f"  Closing price: ${service.get_closing_price(filtered):.2f}")
-
-    # Test multiple tickers
-    print("\nTesting bulk fetch...")
-    data = service.fetch_multiple(['NVDA', 'META', 'TSLA'], period='3mo')
+    # Test batch fetch
+    print("\nTesting batch fetch (5 tickers)...")
+    data = service.fetch_multiple(['NVDA', 'META', 'TSLA', 'AAPL', 'MSFT'], period='3mo')
     for ticker, df in data.items():
         print(f"  {ticker}: {len(df)} days")
+
+    # Test fundamentals
+    print("\nTesting fundamentals fetch...")
+    fund = service.get_fundamentals('AAPL')
+    print(f"  AAPL P/E: {fund.get('trailingPE')}")
+    print(f"  AAPL ROE: {fund.get('returnOnEquity')}")
+    print(f"  AAPL Debt/Equity: {fund.get('debtToEquity')}")
 
     print("\n Done!")

@@ -1,5 +1,5 @@
 """
-Stock Screener Module for UNLV Investment Challenge
+ASTRYX INVESTING - Stock Screener
 Identifies trading setups based on technical criteria
 """
 
@@ -417,7 +417,7 @@ def generate_screening_report(screen_df: pd.DataFrame) -> str:
 
     report = []
     report.append("=" * 60)
-    report.append("UNLV INVESTMENT CHALLENGE - STOCK SCREENING REPORT")
+    report.append("ASTRYX INVESTING - STOCK SCREENING REPORT")
     report.append("=" * 60)
     report.append("")
 

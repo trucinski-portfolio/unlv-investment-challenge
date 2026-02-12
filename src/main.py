@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 ASTRYX INVESTING - Unified CLI
-Single entry point for all trading system operations
+Single entry point for all stock analytics operations
 
 Usage:
-    python main.py scan                    # Daily market scan → Excel
+    python main.py scan                    # Full S&P 500 scan → Excel
     python main.py scan --watchlist        # Scan your watchlist only
+    python main.py scan --top 100          # Scan top 100 only
     python main.py scan --date 2026-01-27  # Historical scan
 
     python main.py chart NVDA META         # Generate charts
     python main.py chart --watchlist       # Charts for watchlist
 
-    python main.py backtest                # Run strategy backtest
-    python main.py backtest --period 2y    # 2-year backtest
+    python main.py lookup AAPL NVDA        # Fundamental data lookup
 
-    python main.py info AAPL               # Get stock info
+    python main.py quick AAPL TSLA         # Quick console scan
 """
 
 import argparse
@@ -26,9 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     WATCHLIST,
-    DEFAULT_PORTFOLIO_VALUE,
-    COMPETITION,
     OUTPUT,
+    get_figures_dir,
 )
 
 
@@ -49,17 +48,12 @@ def cmd_scan(args):
     results = run_daily_evaluation(
         tickers,
         period=args.period,
-        eval_date=args.date
+        eval_date=args.date,
+        fetch_fundamentals=not args.no_fundamentals,
     )
-
-    # Add portfolio value
-    results['portfolio_value'] = args.portfolio
 
     # Print summary
     print_summary(results)
-    print(f"\nPortfolio: ${args.portfolio:,.0f}")
-    print(f"  Max Position (25%): ${args.portfolio * 0.25:,.0f}")
-    print(f"  Standard (10%): ${args.portfolio * 0.10:,.0f}")
 
     # Save results
     if not args.no_save:
@@ -94,8 +88,8 @@ def cmd_chart(args):
         print("Error: Specify tickers or use --watchlist")
         return
 
-    output_dir = os.path.join(os.path.dirname(__file__), '..', 'output', 'charts')
-    os.makedirs(output_dir, exist_ok=True)
+    base_output = os.path.join(os.path.dirname(__file__), '..', 'output')
+    output_dir = get_figures_dir(base_output)
 
     print(f"\nGenerating charts for: {', '.join(tickers)}")
     print("-" * 50)
@@ -105,86 +99,91 @@ def cmd_chart(args):
             if args.no_save:
                 plot_stock_analysis(ticker, args.period)
             else:
-                timestamp = datetime.now().strftime('%Y%m%d')
-                save_path = os.path.join(output_dir, f'{ticker}_{timestamp}.png')
+                save_path = os.path.join(output_dir, f'{ticker}.png')
                 plot_stock_analysis(ticker, args.period, save_path)
-            print(f"  ✓ {ticker}")
+            print(f"  {ticker}")
         except Exception as e:
-            print(f"  ✗ {ticker}: {e}")
+            print(f"  {ticker}: {e}")
 
     if not args.no_save:
         print(f"\nCharts saved to: {output_dir}")
 
 
-def cmd_backtest(args):
-    """Run strategy backtest"""
-    from backtester import Backtester, print_backtest_report, run_strategy_comparison
-    from config import BACKTEST
-
-    tickers = args.tickers or [
-        'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'META', 'AMZN',
-        'TSLA', 'JPM', 'V', 'UNH', 'XOM', 'CVX', 'EOG',
-        'HD', 'COST', 'RTX', 'GS', 'LIN'
-    ]
-
-    exclude_setups = BACKTEST['exclude_setups'] if args.optimized else []
-
-    print("\n=== ASTRYX INVESTING - Backtester ===")
-    print(f"Period: {args.period}")
-    print(f"Tickers: {len(tickers)} stocks")
-    print(f"Mode: {'Optimized' if args.optimized else 'All Setups'}")
-
-    bt = Backtester(
-        initial_capital=COMPETITION['initial_capital'],
-        position_size_pct=BACKTEST['position_size_pct'],
-        exclude_setups=exclude_setups
-    )
-
-    result = bt.backtest_universe(tickers, period=args.period)
-    mode_name = "OPTIMIZED" if args.optimized else "ALL SETUPS"
-    print_backtest_report(result, f"BACKTEST: {mode_name}")
-
-    if args.compare:
-        print("\n\nRunning strategy comparison...")
-        run_strategy_comparison(tickers, period=args.period)
-
-
-def cmd_info(args):
-    """Get stock information"""
+def cmd_lookup(args):
+    """Look up fundamental data for specific tickers"""
     from data_service import DataService
+    from config import FUNDAMENTAL_LABELS
 
     service = DataService()
 
     for ticker in args.tickers:
-        info = service.get_stock_info(ticker)
-        df = service.fetch_stock(ticker, period='5d')
+        fund = service.get_fundamentals(ticker)
 
-        print(f"\n{'=' * 40}")
-        print(f"{info['name']} ({ticker})")
-        print(f"{'=' * 40}")
-        print(f"Sector:     {info['sector']}")
-        print(f"Industry:   {info['industry']}")
-        print(f"Market Cap: ${info['market_cap'] / 1e9:.1f}B" if info['market_cap'] else "N/A")
-        print(f"Beta:       {info['beta']:.2f}" if info['beta'] else "N/A")
+        print(f"\n{'=' * 50}")
+        print(f"  {fund.get('name', ticker)} ({ticker})")
+        print(f"{'=' * 50}")
 
-        if df is not None and not df.empty:
-            current_price = service.get_closing_price(df)
-            print(f"Price:      ${current_price:.2f}")
+        # Identity
+        sector = fund.get('sector') or 'Unknown'
+        industry = fund.get('industry') or 'Unknown'
+        mcap = fund.get('marketCap')
+        beta = fund.get('beta')
+        print(f"  Sector:     {sector}")
+        print(f"  Industry:   {industry}")
+        if mcap:
+            if mcap >= 1e12:
+                print(f"  Market Cap: ${mcap / 1e12:.2f}T")
+            else:
+                print(f"  Market Cap: ${mcap / 1e9:.1f}B")
+        if beta:
+            print(f"  Beta:       {beta:.2f}")
 
-        # Position sizing based on portfolio
-        portfolio = args.portfolio
-        max_pos = portfolio * COMPETITION['max_single_position_pct'] / 100
-        std_pos = portfolio * 0.10
+        # Valuation
+        print(f"\n  VALUATION")
+        for field in ['trailingPE', 'forwardPE', 'pegRatio', 'priceToSalesTrailing12Months', 'enterpriseToEbitda']:
+            val = fund.get(field)
+            label = FUNDAMENTAL_LABELS.get(field, field)
+            if val is not None:
+                print(f"    {label:16} {val:.2f}")
 
-        print(f"\nPosition Sizing (${portfolio:,.0f} portfolio):")
-        print(f"  Max (25%):      ${max_pos:,.0f}")
-        print(f"  Standard (10%): ${std_pos:,.0f}")
+        # Growth
+        print(f"\n  GROWTH")
+        for field in ['revenueGrowth', 'earningsGrowth', 'earningsQuarterlyGrowth']:
+            val = fund.get(field)
+            label = FUNDAMENTAL_LABELS.get(field, field)
+            if val is not None:
+                print(f"    {label:20} {val * 100:+.1f}%")
 
-        if df is not None:
-            current_price = service.get_closing_price(df)
-            if current_price > 0:
-                print(f"  Max Shares:     {int(max_pos / current_price)}")
-                print(f"  Std Shares:     {int(std_pos / current_price)}")
+        # Profitability
+        print(f"\n  PROFITABILITY")
+        for field in ['returnOnEquity', 'profitMargins', 'operatingMargins', 'grossMargins']:
+            val = fund.get(field)
+            label = FUNDAMENTAL_LABELS.get(field, field)
+            if val is not None:
+                print(f"    {label:18} {val * 100:.1f}%")
+        fcf = fund.get('freeCashflow')
+        if fcf:
+            print(f"    {'Free Cash Flow':18} ${fcf / 1e9:.1f}B")
+
+        # Health
+        print(f"\n  HEALTH")
+        for field in ['debtToEquity', 'currentRatio']:
+            val = fund.get(field)
+            label = FUNDAMENTAL_LABELS.get(field, field)
+            if val is not None:
+                print(f"    {label:18} {val:.2f}")
+        for field in ['shortPercentOfFloat', 'shortRatio']:
+            val = fund.get(field)
+            label = FUNDAMENTAL_LABELS.get(field, field)
+            if val is not None:
+                if field == 'shortPercentOfFloat':
+                    print(f"    {label:18} {val * 100:.1f}%")
+                else:
+                    print(f"    {label:18} {val:.1f}")
+
+        div = fund.get('dividendYield')
+        if div:
+            print(f"\n  Dividend Yield:   {div * 100:.2f}%")
 
 
 def cmd_quick(args):
@@ -238,19 +237,18 @@ def cmd_quick(args):
 def main():
     parser = argparse.ArgumentParser(
         prog='astryx',
-        description='ASTRYX INVESTING - Trading Analysis System',
+        description='ASTRYX INVESTING - Stock Analytics System',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py scan                    Daily scan → Excel report
+  python main.py scan                    Full S&P 500 scan → Excel report
   python main.py scan --watchlist        Scan watchlist only
+  python main.py scan --top 100          Scan top 100 by market cap
   python main.py scan --date 2026-01-27  Historical scan
 
   python main.py chart NVDA META         Generate charts
+  python main.py lookup AAPL NVDA        Fundamental data lookup
   python main.py quick AAPL TSLA         Quick console scan
-
-  python main.py backtest                Strategy backtest
-  python main.py info AAPL               Stock info + position sizing
         """
     )
 
@@ -262,12 +260,11 @@ Examples:
     scan_parser = subparsers.add_parser('scan', help='Daily market evaluation')
     scan_parser.add_argument('--tickers', '-t', nargs='+', help='Specific tickers')
     scan_parser.add_argument('--watchlist', '-w', action='store_true', help='Use watchlist')
-    scan_parser.add_argument('--top', '-n', type=int, default=50, help='Top N S&P 500 (default: 50)')
+    scan_parser.add_argument('--top', '-n', type=int, default=None, help='Top N S&P 500 (default: all)')
     scan_parser.add_argument('--period', '-p', default='1y', help='Data period (default: 1y)')
     scan_parser.add_argument('--date', '-d', help='Historical date (YYYY-MM-DD)')
-    scan_parser.add_argument('--portfolio', type=float, default=DEFAULT_PORTFOLIO_VALUE,
-                             help=f'Portfolio value (default: ${DEFAULT_PORTFOLIO_VALUE:,.0f})')
-    scan_parser.add_argument('--no-save', action='store_true', help='Don\'t save to file')
+    scan_parser.add_argument('--no-save', action='store_true', help="Don't save to file")
+    scan_parser.add_argument('--no-fundamentals', action='store_true', help='Skip fundamentals fetch (faster)')
     scan_parser.set_defaults(func=cmd_scan)
 
     # -------------------------------------------------------------------------
@@ -281,24 +278,11 @@ Examples:
     chart_parser.set_defaults(func=cmd_chart)
 
     # -------------------------------------------------------------------------
-    # BACKTEST command
+    # LOOKUP command
     # -------------------------------------------------------------------------
-    bt_parser = subparsers.add_parser('backtest', help='Run strategy backtest')
-    bt_parser.add_argument('--tickers', '-t', nargs='+', help='Tickers to backtest')
-    bt_parser.add_argument('--period', '-p', default='2y', help='Backtest period (default: 2y)')
-    bt_parser.add_argument('--optimized', '-o', action='store_true',
-                           help='Use optimized settings (excludes underperforming setups)')
-    bt_parser.add_argument('--compare', '-c', action='store_true', help='Compare strategies')
-    bt_parser.set_defaults(func=cmd_backtest)
-
-    # -------------------------------------------------------------------------
-    # INFO command
-    # -------------------------------------------------------------------------
-    info_parser = subparsers.add_parser('info', help='Get stock info and position sizing')
-    info_parser.add_argument('tickers', nargs='+', help='Tickers to look up')
-    info_parser.add_argument('--portfolio', type=float, default=DEFAULT_PORTFOLIO_VALUE,
-                             help=f'Portfolio value (default: ${DEFAULT_PORTFOLIO_VALUE:,.0f})')
-    info_parser.set_defaults(func=cmd_info)
+    lookup_parser = subparsers.add_parser('lookup', help='Fundamental data lookup')
+    lookup_parser.add_argument('tickers', nargs='+', help='Tickers to look up')
+    lookup_parser.set_defaults(func=cmd_lookup)
 
     # -------------------------------------------------------------------------
     # QUICK command

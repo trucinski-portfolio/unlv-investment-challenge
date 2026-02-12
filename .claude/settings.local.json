@@ -6,7 +6,14 @@
       "Bash(python:*)",
       "Bash(ls:*)",
       "Bash(file:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(wc:*)",
+      "Bash(python3:*)",
+      "Bash(pip3 list:*)",
+      "Bash(for f in config.py data_service.py indicators.py screener.py main.py daily_eval.py visualizer.py)",
+      "Bash(do python3 -m py_compile \"$f\")",
+      "Bash(echo:*)",
+      "Bash(done)"
     ]
   }
 }
