@@ -8,9 +8,9 @@ this script fetches today's fundamentals once and replicates them across
 historical trading dates. For price data, it uses actual historical prices.
 
 Usage:
-    python historical_backfiller.py                        # Backfill from 2026-01-01
-    python historical_backfiller.py --start 2026-01-15     # Custom start date
-    python historical_backfiller.py --skip-existing        # Skip dates already fetched
+    python3 historical_backfiller.py                        # Backfill from 2026-01-01
+    python3 historical_backfiller.py --start 2026-01-15     # Custom start date
+    python3 historical_backfiller.py --skip-existing        # Skip dates already fetched
 """
 
 import os

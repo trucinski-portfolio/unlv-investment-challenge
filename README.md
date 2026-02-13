@@ -20,25 +20,24 @@ Python-based stock analytics system that scans the entire S&P 500 daily, scores 
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
 # Daily pipeline: fetch fundamentals, validate, run quant models
-python src/main.py pipeline
+python3 src/main.py pipeline
 
 # Or run steps individually
-python src/main.py fetch              # Fetch today's S&P 500 fundamentals
-python src/main.py validate           # Sanity check the data
-python src/main.py quant              # Run Value + Growth models
+python3 src/main.py fetch              # Fetch today's S&P 500 fundamentals
+python3 src/main.py validate           # Sanity check the data
+python3 src/main.py quant              # Run Value + Growth models
 
 # Technical analysis
-python src/main.py scan               # Full S&P 500 scan → Excel
-python src/main.py scan --watchlist   # Scan watchlist only
-python src/main.py chart NVDA META    # Generate charts
-python src/main.py quick AAPL TSLA    # Quick console scan
-python src/main.py lookup AAPL        # Detailed fundamentals
+python3 src/main.py scan               # Full S&P 500 scan → Excel
+python3 src/main.py scan --watchlist   # Scan watchlist only
+python3 src/main.py chart NVDA META    # Generate charts
+python3 src/main.py quick AAPL TSLA    # Quick console scan
+python3 src/main.py lookup AAPL        # Detailed fundamentals
 ```
 
----
 
 ## Quant Strategy
 

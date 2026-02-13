@@ -4,22 +4,22 @@ ASTRYX INVESTING - Unified CLI
 Single entry point for all stock analytics operations
 
 Usage:
-    python main.py scan                    # Full S&P 500 scan → Excel
-    python main.py scan --watchlist        # Scan your watchlist only
-    python main.py scan --top 100          # Scan top 100 only
-    python main.py scan --date 2026-01-27  # Historical scan
+    python3 main.py scan                    # Full S&P 500 scan → Excel
+    python3 main.py scan --watchlist        # Scan your watchlist only
+    python3 main.py scan --top 100          # Scan top 100 only
+    python3 main.py scan --date 2026-01-27  # Historical scan
 
-    python main.py chart NVDA META         # Generate charts
-    python main.py chart --watchlist       # Charts for watchlist
+    python3 main.py chart NVDA META         # Generate charts
+    python3 main.py chart --watchlist       # Charts for watchlist
 
-    python main.py lookup AAPL NVDA        # Fundamental data lookup
-    python main.py quick AAPL TSLA         # Quick console scan
+    python3 main.py lookup AAPL NVDA        # Fundamental data lookup
+    python3 main.py quick AAPL TSLA         # Quick console scan
 
-    python main.py fetch                   # Fetch today's fundamentals CSV
-    python main.py backfill                # Backfill historical CSVs
-    python main.py validate                # Validate all daily CSVs
-    python main.py quant                   # Run Value + Growth models
-    python main.py pipeline                # Full daily pipeline
+    python3 main.py fetch                   # Fetch today's fundamentals CSV
+    python3 main.py backfill                # Backfill historical CSVs
+    python3 main.py validate                # Validate all daily CSVs
+    python3 main.py quant                   # Run Value + Growth models
+    python3 main.py pipeline                # Full daily pipeline
 """
 
 import argparse

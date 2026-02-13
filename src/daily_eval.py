@@ -3,9 +3,9 @@
 ASTRYX INVESTING - Daily Market Evaluation
 
 NOTE: Prefer using main.py instead:
-    python main.py scan                    # Full S&P 500 scan → Excel
-    python main.py scan --watchlist        # Scan watchlist only
-    python main.py scan --date 2026-01-27  # Historical scan
+    python3 main.py scan                    # Full S&P 500 scan → Excel
+    python3 main.py scan --watchlist        # Scan watchlist only
+    python3 main.py scan --date 2026-01-27  # Historical scan
 """
 
 import pandas as pd

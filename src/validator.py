@@ -4,9 +4,9 @@ ASTRYX INVESTING - Data Validator (Sanity Check)
 Verifies each daily CSV has ~500 rows and all required columns.
 
 Usage:
-    python validator.py                      # Validate all snapshots
-    python validator.py --date 2026-02-10    # Validate a specific date
-    python validator.py --fix                # Attempt to fix issues
+    python3 validator.py                      # Validate all snapshots
+    python3 validator.py --date 2026-02-10    # Validate a specific date
+    python3 validator.py --fix                # Attempt to fix issues
 """
 
 import os

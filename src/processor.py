@@ -5,8 +5,8 @@ Reads daily CSV snapshots, merges into a master DataFrame, and computes
 30-day delta (velocity) features for trend detection.
 
 Usage:
-    python processor.py                    # Process all snapshots
-    python processor.py --date 2026-02-10  # Process up to a specific date
+    python3 processor.py                    # Process all snapshots
+    python3 processor.py --date 2026-02-10  # Process up to a specific date
 """
 
 import os

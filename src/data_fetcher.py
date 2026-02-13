@@ -4,8 +4,8 @@ ASTRYX INVESTING - Daily Fundamental Data Fetcher
 Fetches 24 fundamental metrics for all S&P 500 stocks and saves as dated CSV.
 
 Usage:
-    python data_fetcher.py                  # Fetch today's snapshot
-    python data_fetcher.py --date 2026-02-10  # Fetch for a specific date
+    python3 data_fetcher.py                  # Fetch today's snapshot
+    python3 data_fetcher.py --date 2026-02-10  # Fetch for a specific date
 """
 
 import os

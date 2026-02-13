@@ -1,0 +1,48 @@
+ASTRYX INVESTING - Quant Recommendations
+Generated: 2026-02-13
+Strategy: 70% Current Fundamentals / 30% Historical Trend
+======================================================================
+
+MODEL A: VALUE ANCHOR (Top 4 Undervalued Quality)
+--------------------------------------------------
+  VICI   VICI Properties Inc.               
+         P/E(Fwd)=10.2, ROE=10.4%, D/E=63, CR=37.05
+         Score: 0.603
+
+  ABBV   AbbVie Inc.                        
+         P/E(Fwd)=14.2, ROE=1106.7%, D/E=80, CR=1.50
+         Score: 0.572
+
+  LNC    Lincoln National Corporation       
+         P/E(Fwd)=4.7, ROE=21.7%, D/E=74, CR=2.29
+         Score: 0.540
+
+  BEN    Franklin Resources, Inc.           
+         P/E(Fwd)=9.3, ROE=4.5%, D/E=25, CR=5.56
+         Score: 0.488
+
+
+MODEL B: GROWTH AGGRESSOR (Top 5 High-Velocity)
+--------------------------------------------------
+  NVDA   NVIDIA Corporation                 
+         RevG=62.5%, Beta=2.31, OpMgn=63.2%, Short=1.1%
+         Score: 0.628
+
+  KEY    KeyCorp                            
+         RevG=131.5%, Beta=1.07, OpMgn=33.6%, Short=2.7%
+         Score: 0.611
+
+  MU     Micron Technology, Inc.            
+         RevG=56.7%, Beta=1.50, OpMgn=45.0%, Short=2.7%
+         Score: 0.499
+
+  TER    Teradyne, Inc.                     
+         RevG=43.9%, Beta=1.82, OpMgn=28.3%, Short=3.3%
+         Score: 0.455
+
+  RF     Regions Financial Corporation      
+         RevG=15.6%, Beta=1.03, OpMgn=47.0%, Short=7.8%
+         Score: 0.442
+
+======================================================================
+Total unique picks: 9

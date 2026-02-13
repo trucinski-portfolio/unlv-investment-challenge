@@ -19,9 +19,9 @@ Model B: The Growth Aggressor (offensive)
 Ensemble: 70% current fundamentals / 30% historical trend weighting
 
 Usage:
-    python models.py                         # Run both models on latest data
-    python models.py --model value           # Run Value Anchor only
-    python models.py --model growth          # Run Growth Aggressor only
+    python3 models.py                         # Run both models on latest data
+    python3 models.py --model value           # Run Value Anchor only
+    python3 models.py --model growth          # Run Growth Aggressor only
 """
 
 import os
