@@ -11,10 +11,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 .ipynb_checkpoints
-# Ignore large datasets 
+# Ignore large datasets
 data/*.csv
 data/*.json
-!data/sample.csv 
+!data/sample.csv
+data/raw_snapshots/
 
 # --- Virtual Environments ---
 .venv/

@@ -13,8 +13,13 @@ Usage:
     python main.py chart --watchlist       # Charts for watchlist
 
     python main.py lookup AAPL NVDA        # Fundamental data lookup
-
     python main.py quick AAPL TSLA         # Quick console scan
+
+    python main.py fetch                   # Fetch today's fundamentals CSV
+    python main.py backfill                # Backfill historical CSVs
+    python main.py validate                # Validate all daily CSVs
+    python main.py quant                   # Run Value + Growth models
+    python main.py pipeline                # Full daily pipeline
 """
 
 import argparse
@@ -234,6 +239,80 @@ def cmd_quick(args):
             print(f"{ticker}: Error - {e}")
 
 
+def cmd_fetch(args):
+    """Fetch daily S&P 500 fundamentals snapshot"""
+    from data_fetcher import run_fetch
+    run_fetch(target_date=args.date, top_n=args.top)
+
+
+def cmd_backfill(args):
+    """Backfill historical fundamental CSVs"""
+    from historical_backfiller import backfill
+    backfill(start_date=args.start, end_date=args.end, skip_existing=not args.force)
+
+
+def cmd_validate(args):
+    """Validate daily CSV snapshots"""
+    from validator import validate_all, validate_date
+    if args.date:
+        validate_date(args.date)
+    else:
+        validate_all()
+
+
+def cmd_quant(args):
+    """Run quant models (Value Anchor + Growth Aggressor)"""
+    from models import run_quant, get_value_score, get_growth_score
+    from processor import get_latest_with_trends
+
+    if args.model == 'both':
+        run_quant(up_to_date=args.date, save=not args.no_save)
+    else:
+        df = get_latest_with_trends(up_to_date=args.date)
+        if df.empty:
+            print("No data available. Run 'python main.py fetch' first!")
+            return
+        if args.model == 'value':
+            picks = get_value_score(df)
+        else:
+            picks = get_growth_score(df)
+        if not picks.empty:
+            print(f"\nTop {len(picks)} picks:")
+            for _, row in picks.iterrows():
+                print(f"  {row['ticker']:6} {row.get('longName', '')[:30]}")
+
+
+def cmd_pipeline(args):
+    """Run full daily pipeline: fetch -> validate -> process -> quant"""
+    from datetime import datetime as dt
+
+    target_date = args.date or dt.now().strftime('%Y-%m-%d')
+    print(f"\n{'='*50}")
+    print(f"  ASTRYX Daily Pipeline: {target_date}")
+    print(f"{'='*50}")
+
+    # Step 1: Fetch
+    print(f"\n[1/3] Fetching fundamentals...")
+    from data_fetcher import run_fetch
+    run_fetch(target_date=target_date)
+
+    # Step 2: Validate
+    print(f"\n[2/3] Validating data...")
+    from validator import validate_date
+    result = validate_date(target_date)
+    if not result['valid']:
+        print("\n  WARNING: Validation failed, proceeding anyway...")
+
+    # Step 3: Run quant models
+    print(f"\n[3/3] Running quant models...")
+    from models import run_quant
+    run_quant(up_to_date=target_date)
+
+    print(f"\n{'='*50}")
+    print(f"  Pipeline complete!")
+    print(f"{'='*50}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='astryx',
@@ -249,6 +328,13 @@ Examples:
   python main.py chart NVDA META         Generate charts
   python main.py lookup AAPL NVDA        Fundamental data lookup
   python main.py quick AAPL TSLA         Quick console scan
+
+  python main.py fetch                   Fetch today's S&P 500 fundamentals
+  python main.py backfill                Backfill from 2026-01-01 to today
+  python main.py validate                Validate all daily CSVs
+  python main.py quant                   Run Value + Growth models
+  python main.py quant --model value     Run Value Anchor only
+  python main.py pipeline                Full daily pipeline
         """
     )
 
@@ -291,6 +377,40 @@ Examples:
     quick_parser.add_argument('tickers', nargs='*', help='Tickers to scan')
     quick_parser.add_argument('--period', '-p', default='6mo', help='Data period (default: 6mo)')
     quick_parser.set_defaults(func=cmd_quick)
+
+    # -------------------------------------------------------------------------
+    # QUANT commands (Dual-Model Engine)
+    # -------------------------------------------------------------------------
+    # FETCH: Daily fundamental snapshot
+    fetch_parser = subparsers.add_parser('fetch', help='Fetch daily S&P 500 fundamentals CSV')
+    fetch_parser.add_argument('--date', '-d', default=None, help='Target date (YYYY-MM-DD)')
+    fetch_parser.add_argument('--top', '-n', type=int, default=None, help='Only top N tickers')
+    fetch_parser.set_defaults(func=cmd_fetch)
+
+    # BACKFILL: Historical data backfill
+    backfill_parser = subparsers.add_parser('backfill', help='Backfill historical fundamental CSVs')
+    backfill_parser.add_argument('--start', '-s', default='2026-01-01', help='Start date')
+    backfill_parser.add_argument('--end', '-e', default=None, help='End date')
+    backfill_parser.add_argument('--force', action='store_true', help='Re-fetch existing dates')
+    backfill_parser.set_defaults(func=cmd_backfill)
+
+    # VALIDATE: Sanity check CSVs
+    validate_parser = subparsers.add_parser('validate', help='Validate daily CSV snapshots')
+    validate_parser.add_argument('--date', '-d', default=None, help='Validate specific date')
+    validate_parser.set_defaults(func=cmd_validate)
+
+    # QUANT: Run dual-model engine
+    quant_parser = subparsers.add_parser('quant', help='Run quant models (Value + Growth)')
+    quant_parser.add_argument('--model', '-m', choices=['value', 'growth', 'both'],
+                              default='both', help='Which model to run')
+    quant_parser.add_argument('--date', '-d', default=None, help='Process data up to this date')
+    quant_parser.add_argument('--no-save', action='store_true', help="Don't save recommendations")
+    quant_parser.set_defaults(func=cmd_quant)
+
+    # PIPELINE: Run full daily pipeline (fetch + validate + process + quant)
+    pipeline_parser = subparsers.add_parser('pipeline', help='Run full daily pipeline')
+    pipeline_parser.add_argument('--date', '-d', default=None, help='Target date')
+    pipeline_parser.set_defaults(func=cmd_pipeline)
 
     # Parse and execute
     args = parser.parse_args()
